@@ -1,0 +1,20 @@
+{
+  "name": "duty-cycle",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @duty-cycle/web",
+    "build": "npm run build -w @duty-cycle/web",
+    "preview": "npm run preview -w @duty-cycle/web",
+    "test": "vitest run",
+    "typecheck": "tsc -p packages/protocol && tsc -p packages/engine && tsc -p apps/web"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
