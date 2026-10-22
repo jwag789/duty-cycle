@@ -1,14 +1,16 @@
 import { z } from 'zod';
 import { CHANNELS, MAX_ROWS } from './constants';
 import { EMPTY_CELL } from './factory';
-import { BpmSchema, CellSchema, ChannelSettingsSchema, type Cell, type ChannelSettings, type Song } from './song';
+import { BpmSchema, CellSchema, ChannelSettingsSchema, SongSchema, type Cell, type ChannelSettings, type Song } from './song';
 
 const ChannelIndex = z.number().int().min(0).max(CHANNELS.length - 1);
 const RowIndex = z.number().int().min(0).max(MAX_ROWS - 1);
 
 /**
- * Every change to a song is one of these. In M0 they come from the local editor;
- * from M1 on they are what crosses the wire, so the server can put them in one order.
+ * Every change to a song is one of these. They cross the wire, the server puts
+ * them in one order, and every client applies them with the same applyOp.
+ * Each op sets a value rather than adjusting one, so applying an op twice is
+ * harmless. That keeps resending after a reconnect safe.
  */
 export const OpSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('setNote'), channel: ChannelIndex, row: RowIndex, note: CellSchema.shape.note }),
@@ -16,6 +18,8 @@ export const OpSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('clearCell'), channel: ChannelIndex, row: RowIndex }),
   z.object({ type: z.literal('setBpm'), bpm: BpmSchema }),
   z.object({ type: z.literal('setChannel'), channel: ChannelIndex, settings: ChannelSettingsSchema.partial() }),
+  /** Load demo, Clear: swaps the whole song. */
+  z.object({ type: z.literal('replaceSong'), song: SongSchema }),
 ]);
 
 export type Op = z.infer<typeof OpSchema>;
@@ -48,6 +52,8 @@ export function applyOp(song: Song, op: Op): Song {
       channels[op.channel] = { ...current, ...patch };
       return { ...song, channels };
     }
+    case 'replaceSong':
+      return op.song;
   }
 }
 

@@ -1,0 +1,20 @@
+{
+  "name": "@duty-cycle/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@duty-cycle/protocol": "*",
+    "tsx": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@duty-cycle/client": "*",
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.13"
+  }
+}

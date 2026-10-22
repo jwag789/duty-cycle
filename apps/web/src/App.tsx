@@ -1,34 +1,60 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { applyOp, CHANNELS, demoSong, emptySong, type ChannelSettings, type Op } from '@duty-cycle/protocol';
+import { CHANNELS, demoSong, emptySong, type ChannelSettings, type Op, type Song } from '@duty-cycle/protocol';
 import { ChannelHeader } from './components/ChannelHeader';
 import { Button } from './components/Button';
 import { PatternGrid } from './components/PatternGrid';
 import { Scope } from './components/Scope';
+import { SessionBar } from './components/SessionBar';
 import { Transport } from './components/Transport';
 import { handleKey, INITIAL_EDITOR, type Cursor, type EditorState } from './editor';
-import { loadSong, saveSong } from './storage';
+import { newRoomId, roomFromPath, roomUrl } from './net/session';
+import { useRoom } from './net/useRoom';
 import { useChipEngine, usePlayhead } from './useChipEngine';
+import { useSoloSong } from './useSoloSong';
 
 export function App() {
-  const [song, setSong] = useState(loadSong);
+  const [room, setRoom] = useState(() => roomFromPath(location.pathname));
+  // The song a new jam starts from; only the person who starts it sends one.
+  const [jamSeed, setJamSeed] = useState<{ room: string; song: Song } | null>(null);
+  const solo = useSoloSong();
+  const { connection, snapshot } = useRoom(room, jamSeed?.room === room ? jamSeed.song : undefined);
+
+  const song = room ? snapshot.song : solo.song;
+  const dispatch = useCallback(
+    (ops: readonly Op[]) => (connection ? connection.dispatch(ops) : solo.dispatch(ops)),
+    [connection, solo.dispatch],
+  );
+
   const [editor, setEditor] = useState<EditorState>(INITIAL_EDITOR);
   const [mutes, setMutes] = useState<boolean[]>(() => CHANNELS.map(() => false));
   const [playing, setPlaying] = useState(false);
   const { engine, audioState, error } = useChipEngine();
   const playRow = usePlayhead(engine, playing);
 
-  const dispatch = useCallback((ops: Op[]) => {
-    if (ops.length > 0) setSong((current) => ops.reduce(applyOp, current));
+  useEffect(() => {
+    const onPopState = () => setRoom(roomFromPath(location.pathname));
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   useEffect(() => {
-    engine?.setSong(song);
-    saveSong(song);
+    if (song) engine?.setSong(song);
   }, [engine, song]);
 
   useEffect(() => {
     engine?.setMutes(mutes);
   }, [engine, mutes]);
+
+  useEffect(() => {
+    connection?.setCursor(editor.cursor);
+  }, [connection, editor.cursor]);
+
+  // Someone may load a shorter song under your cursor.
+  useEffect(() => {
+    if (song && editor.cursor.row >= song.rows) {
+      setEditor((state) => ({ ...state, cursor: { ...state.cursor, row: song.rows - 1 } }));
+    }
+  }, [song, editor.cursor.row]);
 
   const togglePlay = useCallback(() => {
     if (!engine) return;
@@ -38,15 +64,16 @@ export function App() {
     setPlaying(!playing);
   }, [engine, playing]);
 
-  // The key handler reads the latest state through refs so it is bound once.
-  const latest = useRef({ editor, song, engine, togglePlay });
-  latest.current = { editor, song, engine, togglePlay };
+  // The key handler reads the latest state through a ref so it is bound once.
+  const latest = useRef({ editor, song, engine, togglePlay, dispatch });
+  latest.current = { editor, song, engine, togglePlay, dispatch };
   const heldPreviews = useRef(new Map<string, number>());
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || isTextField(event.target)) return;
-      const { editor, song, engine, togglePlay } = latest.current;
+      const { editor, song, engine, togglePlay, dispatch } = latest.current;
+      if (!song) return;
       const result = handleKey(editor, song, {
         code: event.code,
         key: event.key,
@@ -76,20 +103,28 @@ export function App() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [dispatch]);
+  }, []);
 
   const select = useCallback((cursor: Cursor) => setEditor((state) => ({ ...state, cursor })), []);
 
-  const setChannel = (channel: number, settings: Partial<ChannelSettings>) =>
-    dispatch([{ type: 'setChannel', channel, settings }]);
+  const goTo = (path: string, nextRoom: string | null) => {
+    history.pushState(null, '', path);
+    setRoom(nextRoom);
+  };
+
+  const startJam = () => {
+    const id = newRoomId();
+    setJamSeed({ room: id, song: solo.song });
+    goTo(`/r/${id}`, id);
+  };
+
+  const replaceSong = (next: Song) => {
+    dispatch([{ type: 'replaceSong', song: next }]);
+    setEditor((state) => ({ ...state, cursor: INITIAL_EDITOR.cursor }));
+  };
 
   const toggleMute = (channel: number) =>
     setMutes((current) => current.map((muted, i) => (i === channel ? !muted : muted)));
-
-  const replaceSong = (next: typeof song) => {
-    setSong(next);
-    setEditor((state) => ({ ...state, cursor: INITIAL_EDITOR.cursor }));
-  };
 
   return (
     <div className="app">
@@ -99,7 +134,7 @@ export function App() {
         </h1>
         <Transport
           playing={playing}
-          bpm={song.bpm}
+          bpm={song?.bpm ?? 120}
           octave={editor.octave}
           step={editor.step}
           onTogglePlay={togglePlay}
@@ -109,10 +144,22 @@ export function App() {
         />
         <Scope analyser={engine?.analyser ?? null} />
         <div className="song-actions">
-          <Button onClick={() => replaceSong(demoSong())}>Load demo</Button>
-          <Button onClick={() => replaceSong(emptySong({ bpm: song.bpm }))}>Clear</Button>
+          <Button disabled={!song} onClick={() => replaceSong(demoSong())}>
+            Load demo
+          </Button>
+          <Button disabled={!song} onClick={() => song && replaceSong(emptySong({ bpm: song.bpm }))}>
+            Clear
+          </Button>
         </div>
       </header>
+
+      <SessionBar
+        room={room}
+        snapshot={snapshot}
+        shareUrl={room ? roomUrl(room) : null}
+        onStartJam={startJam}
+        onLeave={() => goTo('/', null)}
+      />
 
       {error ? (
         <p className="notice is-error" role="alert">
@@ -123,22 +170,33 @@ export function App() {
       ) : null}
 
       <main className="tracker">
-        <div className="tracker-inner">
-          <div className="channel-headers">
-            <span className="row-number-spacer" aria-hidden="true" />
-            {song.channels.map((settings, channel) => (
-              <ChannelHeader
-                key={channel}
-                channel={channel}
-                settings={settings}
-                muted={mutes[channel]!}
-                onMute={() => toggleMute(channel)}
-                onChange={(patch) => setChannel(channel, patch)}
-              />
-            ))}
+        {song ? (
+          <div className="tracker-inner">
+            <div className="channel-headers">
+              <span className="row-number-spacer" aria-hidden="true" />
+              {song.channels.map((settings, channel) => (
+                <ChannelHeader
+                  key={channel}
+                  channel={channel}
+                  settings={settings}
+                  muted={mutes[channel]!}
+                  onMute={() => toggleMute(channel)}
+                  onChange={(patch: Partial<ChannelSettings>) => dispatch([{ type: 'setChannel', channel, settings: patch }])}
+                />
+              ))}
+            </div>
+            <PatternGrid
+              song={song}
+              cursor={editor.cursor}
+              playRow={playRow}
+              mutes={mutes}
+              peers={room ? snapshot.peers : []}
+              onSelect={select}
+            />
           </div>
-          <PatternGrid song={song} cursor={editor.cursor} playRow={playRow} mutes={mutes} onSelect={select} />
-        </div>
+        ) : (
+          <RoomPlaceholder status={snapshot.status} onLeave={() => goTo('/', null)} />
+        )}
       </main>
 
       <footer className="keys">
@@ -161,6 +219,22 @@ export function App() {
           <kbd>Space</kbd> play / stop
         </span>
       </footer>
+    </div>
+  );
+}
+
+function RoomPlaceholder({ status, onLeave }: { status: string; onLeave: () => void }) {
+  const message =
+    status === 'full'
+      ? 'This jam already has 8 players.'
+      : status === 'failed'
+        ? "Couldn't join this jam."
+        : 'Joining the jam…';
+  const stuck = status === 'full' || status === 'failed';
+  return (
+    <div className="room-placeholder">
+      <p>{message}</p>
+      {stuck && <Button onClick={onLeave}>Back to solo</Button>}
     </div>
   );
 }

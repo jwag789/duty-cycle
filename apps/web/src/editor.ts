@@ -1,12 +1,6 @@
-import { CHANNELS, MAX_NOTE, MAX_VOLUME, NOTE_OFF, type Op, type Song } from '@duty-cycle/protocol';
+import { CHANNELS, MAX_NOTE, MAX_VOLUME, NOTE_OFF, type Column, type Cursor, type Op, type Song } from '@duty-cycle/protocol';
 
-export type Column = 'note' | 'volume';
-
-export interface Cursor {
-  row: number;
-  channel: number;
-  column: Column;
-}
+export type { Column, Cursor };
 
 export interface EditorState {
   cursor: Cursor;

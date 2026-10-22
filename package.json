@@ -7,14 +7,16 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "npm run dev -w @duty-cycle/web",
+    "dev": "concurrently -k -n server,web -c yellow,cyan \"npm run dev -w @duty-cycle/server\" \"npm run dev -w @duty-cycle/web\"",
     "build": "npm run build -w @duty-cycle/web",
     "preview": "npm run preview -w @duty-cycle/web",
     "test": "vitest run",
-    "typecheck": "tsc -p packages/protocol && tsc -p packages/engine && tsc -p apps/web"
+    "typecheck": "tsc -p packages/protocol && tsc -p packages/engine && tsc -p packages/client && tsc -p apps/server && tsc -p apps/web",
+    "start": "npm start -w @duty-cycle/server"
   },
   "devDependencies": {
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^3.0.5",
+    "concurrently": "^9.1.2"
   }
 }

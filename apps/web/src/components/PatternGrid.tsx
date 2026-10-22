@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef, type Ref } from 'react';
-import { CHANNELS, noteName, type Cell, type Song } from '@duty-cycle/protocol';
+import { memo, useEffect, useMemo, useRef, type CSSProperties, type Ref } from 'react';
+import { CHANNELS, noteName, type Cell, type Peer, type Song } from '@duty-cycle/protocol';
 import type { Column, Cursor } from '../editor';
 
 interface PatternGridProps {
@@ -7,11 +7,26 @@ interface PatternGridProps {
   cursor: Cursor;
   playRow: number | null;
   mutes: boolean[];
+  /** Other players, drawn as coloured cursors. */
+  peers: readonly Peer[];
   onSelect: (cursor: Cursor) => void;
 }
 
-export function PatternGrid({ song, cursor, playRow, mutes, onSelect }: PatternGridProps) {
+const NO_PEERS: readonly Peer[] = [];
+
+export function PatternGrid({ song, cursor, playRow, mutes, peers, onSelect }: PatternGridProps) {
   const cursorRowRef = useRef<HTMLDivElement>(null);
+
+  const peersByRow = useMemo(() => {
+    const rows = new Map<number, Peer[]>();
+    for (const peer of peers) {
+      if (!peer.cursor) continue;
+      const list = rows.get(peer.cursor.row) ?? [];
+      list.push(peer);
+      rows.set(peer.cursor.row, list);
+    }
+    return rows;
+  }, [peers]);
 
   useEffect(() => {
     cursorRowRef.current?.scrollIntoView({ block: 'nearest' });
@@ -32,6 +47,7 @@ export function PatternGrid({ song, cursor, playRow, mutes, onSelect }: PatternG
           playing={row === playRow}
           cursor={row === cursor.row ? cursor : null}
           mutes={mutes}
+          peers={peersByRow.get(row) ?? NO_PEERS}
           onSelect={onSelect}
         />
       ))}
@@ -48,11 +64,12 @@ interface RowProps {
   playing: boolean;
   cursor: Cursor | null;
   mutes: boolean[];
+  peers: readonly Peer[];
   onSelect: (cursor: Cursor) => void;
 }
 
 const Row = memo(
-  function Row({ ref, row, cells, beat, bar, playing, cursor, mutes, onSelect }: RowProps) {
+  function Row({ ref, row, cells, beat, bar, playing, cursor, mutes, peers, onSelect }: RowProps) {
     const classes = ['grid-row'];
     if (beat) classes.push('is-beat');
     if (bar) classes.push('is-bar');
@@ -64,30 +81,45 @@ const Row = memo(
         <span className="row-number" role="rowheader">
           {row.toString(16).toUpperCase().padStart(2, '0')}
         </span>
-        {cells.map((cell, channel) => (
-          <div
-            key={channel}
-            className={mutes[channel] ? 'cell is-muted' : 'cell'}
-            data-channel={channel}
-            role="gridcell"
-            aria-label={`${CHANNELS[channel]!.name}, row ${row}: ${describe(cell)}`}
-          >
-            <CellPart
-              column="note"
-              text={cell.note === null ? '---' : noteName(cell.note)}
-              empty={cell.note === null}
-              active={cursor?.channel === channel && cursor.column === 'note'}
-              onSelect={() => onSelect({ row, channel, column: 'note' })}
-            />
-            <CellPart
-              column="volume"
-              text={cell.volume === null ? '·' : cell.volume.toString(16).toUpperCase()}
-              empty={cell.volume === null}
-              active={cursor?.channel === channel && cursor.column === 'volume'}
-              onSelect={() => onSelect({ row, channel, column: 'volume' })}
-            />
-          </div>
-        ))}
+        {cells.map((cell, channel) => {
+          const here = peers.filter((p) => p.cursor?.channel === channel);
+          return (
+            <div
+              key={channel}
+              className={mutes[channel] ? 'cell is-muted' : 'cell'}
+              data-channel={channel}
+              role="gridcell"
+              aria-label={`${CHANNELS[channel]!.name}, row ${row}: ${describe(cell)}`}
+            >
+              <CellPart
+                column="note"
+                text={cell.note === null ? '---' : noteName(cell.note)}
+                empty={cell.note === null}
+                active={cursor?.channel === channel && cursor.column === 'note'}
+                peers={peers.filter((p) => p.cursor?.channel === channel && p.cursor.column === 'note')}
+                onSelect={() => onSelect({ row, channel, column: 'note' })}
+              />
+              <CellPart
+                column="volume"
+                text={cell.volume === null ? '·' : cell.volume.toString(16).toUpperCase()}
+                empty={cell.volume === null}
+                active={cursor?.channel === channel && cursor.column === 'volume'}
+                peers={peers.filter((p) => p.cursor?.channel === channel && p.cursor.column === 'volume')}
+                onSelect={() => onSelect({ row, channel, column: 'volume' })}
+              />
+              {here.length > 0 && (
+                <span
+                  className="peer-flag"
+                  style={{ '--peer': here[0]!.color } as CSSProperties}
+                  title={here.map((p) => p.name).join(', ')}
+                  aria-hidden="true"
+                >
+                  {here.length === 1 ? here[0]!.name : `${here[0]!.name} +${here.length - 1}`}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   },
@@ -99,6 +131,7 @@ const Row = memo(
     prev.cursor?.channel === next.cursor?.channel &&
     prev.cursor?.column === next.cursor?.column &&
     prev.mutes === next.mutes &&
+    prev.peers === next.peers &&
     prev.ref === next.ref &&
     prev.onSelect === next.onSelect,
 );
@@ -108,16 +141,23 @@ interface CellPartProps {
   text: string;
   empty: boolean;
   active: boolean;
+  peers: readonly Peer[];
   onSelect: () => void;
 }
 
-function CellPart({ column, text, empty, active, onSelect }: CellPartProps) {
+function CellPart({ column, text, empty, active, peers, onSelect }: CellPartProps) {
   const classes = [column === 'note' ? 'cell-note' : 'cell-volume'];
   if (empty) classes.push('is-empty');
   if (text === '===') classes.push('is-off');
   if (active) classes.push('is-caret');
+  const first = peers[0];
+  if (first) classes.push('has-peer');
   return (
-    <span className={classes.join(' ')} onMouseDown={onSelect}>
+    <span
+      className={classes.join(' ')}
+      style={first ? ({ '--peer': first.color } as CSSProperties) : undefined}
+      onMouseDown={onSelect}
+    >
       {text}
     </span>
   );

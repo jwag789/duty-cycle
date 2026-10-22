@@ -446,3 +446,165 @@ input:focus-visible {
     transition: none;
   }
 }
+
+/* Session bar */
+
+.session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  min-height: 44px;
+  padding: 6px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.session-mode {
+  font: 400 12px var(--pixel);
+  color: var(--text-dim);
+}
+
+.session-hint {
+  color: var(--text-dim);
+}
+
+.session-cta {
+  margin-left: auto;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.session-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.session-actions .session-cta {
+  margin-left: 0;
+}
+
+.session-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.session-bar[data-status='live'] .status-dot {
+  background: #4fe08a;
+  box-shadow: 0 0 0 3px rgba(79, 224, 138, 0.18);
+}
+
+.session-bar[data-status='reconnecting'] .status-dot,
+.session-bar[data-status='connecting'] .status-dot {
+  background: var(--accent);
+}
+
+.session-bar[data-status='full'] .status-dot,
+.session-bar[data-status='failed'] .status-dot {
+  background: #ff5c6c;
+}
+
+.session-room {
+  color: var(--text-dim);
+}
+
+.session-room code {
+  font: 600 12px var(--mono);
+  color: var(--text);
+}
+
+.peer-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.peer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--peer) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--peer) 12%, transparent);
+  font-size: 11px;
+}
+
+.peer-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--peer);
+}
+
+.peer-you {
+  color: var(--text-dim);
+}
+
+/* Other players' cursors */
+
+.cell-note,
+.cell-volume {
+  position: relative;
+}
+
+.has-peer {
+  outline: 1.5px dashed var(--peer);
+  outline-offset: 1px;
+}
+
+.is-caret.has-peer {
+  outline-style: solid;
+}
+
+.cell {
+  position: relative;
+}
+
+/* Sits in the empty space on the right of the cell, so it never hides a note. */
+.peer-flag {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  max-width: calc(50% - 5ch);
+  overflow: hidden;
+  transform: translateY(-50%);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--peer);
+  color: #111;
+  font: 600 9px/1.4 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.grid-row:first-child {
+  border-radius: 7px 7px 0 0;
+}
+
+.grid-row:last-child {
+  border-radius: 0 0 7px 7px;
+}
+
+.room-placeholder {
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  min-height: 300px;
+  color: var(--text-dim);
+}

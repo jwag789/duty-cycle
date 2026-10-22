@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@duty-cycle/client": "*",
     "@duty-cycle/engine": "*",
     "@duty-cycle/protocol": "*",
     "react": "^19.0.0",

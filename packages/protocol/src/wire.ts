@@ -1,0 +1,94 @@
+import { z } from 'zod';
+import { CHANNELS, MAX_ROWS } from './constants';
+import { OpSchema } from './ops';
+import { SongSchema } from './song';
+
+export const ROOM_ID_PATTERN = /^[a-z0-9]{6,32}$/;
+export const MAX_NAME_LENGTH = 24;
+export const MAX_PEERS = 8;
+/** Largest message either side will accept. A 256-row replaceSong is well under this. */
+export const MAX_MESSAGE_BYTES = 256 * 1024;
+
+/** WebSocket close codes the client acts on. */
+export const CLOSE = {
+  /** The first message wasn't a valid hello. Don't retry. */
+  badHello: 4000,
+  /** The room already has MAX_PEERS players. Don't retry. */
+  roomFull: 4001,
+  /** The server is at its room limit. Retrying later may work. */
+  serverFull: 4002,
+} as const;
+
+export const CursorSchema = z.object({
+  row: z.number().int().min(0).max(MAX_ROWS - 1),
+  channel: z.number().int().min(0).max(CHANNELS.length - 1),
+  column: z.enum(['note', 'volume']),
+});
+
+export const PeerSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  color: z.string(),
+  cursor: CursorSchema.nullable(),
+});
+
+export const ClientMessageSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('hello'),
+    room: z.string().regex(ROOM_ID_PATTERN),
+    name: z.string().trim().min(1).max(MAX_NAME_LENGTH),
+    /** The song to start a new room with. Ignored if the room already exists. */
+    seed: SongSchema.optional(),
+  }),
+  /** clientSeq lets the sender recognise its own op when the server echoes it back. */
+  z.object({ type: z.literal('op'), clientSeq: z.number().int().nonnegative(), op: OpSchema }),
+  z.object({ type: z.literal('cursor'), cursor: CursorSchema }),
+]);
+
+export const ServerMessageSchema = z.discriminatedUnion('type', [
+  /** The first message on every connection: the room as it is right now. */
+  z.object({
+    type: z.literal('welcome'),
+    you: PeerSchema,
+    seq: z.number().int().nonnegative(),
+    song: SongSchema,
+    peers: z.array(PeerSchema),
+  }),
+  /** One op in the room's single order. Sent to everyone, including its author. */
+  z.object({
+    type: z.literal('op'),
+    seq: z.number().int().positive(),
+    op: OpSchema,
+    from: z.string(),
+    clientSeq: z.number().int().nonnegative(),
+  }),
+  z.object({ type: z.literal('joined'), peer: PeerSchema }),
+  z.object({ type: z.literal('left'), id: z.string() }),
+  z.object({ type: z.literal('cursor'), id: z.string(), cursor: CursorSchema }),
+  z.object({ type: z.literal('error'), message: z.string() }),
+]);
+
+export type Cursor = z.infer<typeof CursorSchema>;
+export type Column = Cursor['column'];
+export type Peer = z.infer<typeof PeerSchema>;
+export type ClientMessage = z.infer<typeof ClientMessageSchema>;
+export type ServerMessage = z.infer<typeof ServerMessageSchema>;
+export type OpMessage = Extract<ClientMessage, { type: 'op' }>;
+export type ServerOpMessage = Extract<ServerMessage, { type: 'op' }>;
+
+export function parseClientMessage(raw: string): ClientMessage | null {
+  return parseJson(raw, ClientMessageSchema);
+}
+
+export function parseServerMessage(raw: string): ServerMessage | null {
+  return parseJson(raw, ServerMessageSchema);
+}
+
+function parseJson<T>(raw: string, schema: z.ZodType<T>): T | null {
+  try {
+    const result = schema.safeParse(JSON.parse(raw));
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}

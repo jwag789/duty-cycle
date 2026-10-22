@@ -2,7 +2,7 @@
 
 A chiptune tracker for jamming together in the browser. Everyone in a room hears the same song, sample for sample, on the same beat.
 
-> **Status: M0.** A complete single-player tracker with an NES-style synth. Multiplayer starts in M1. See the [roadmap](#roadmap).
+> **Status: M1.** Rooms work: share a link, edit the same song together and see each other's cursors. Each player still presses Play on their own clock; synced playback is M2. See the [roadmap](#roadmap).
 
 ## Why this is hard
 
@@ -13,19 +13,29 @@ A tracker gets around it, because you aren't streaming a performance. You're edi
 - **No audio crosses the network.** Every browser runs the same deterministic synth on the same song data, on a clock synced to the server. Lag only changes when an edit arrives, never the timing of the playback.
 - **Edits are scheduled into the future.** The server stamps each edit with a step that's safely ahead for every player, so it starts on the same beat everywhere.
 
-M0 builds the half of that you can't fake later: a synth and sequencer that are **sample-accurate and deterministic**, and that run on the audio thread.
+M0 built the half you can't fake later: a synth and sequencer that are **sample-accurate and deterministic**, and that run on the audio thread. M1 adds the shared song: one server-ordered stream of edits that every client converges on.
 
 ## Run it
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm test           # 43 tests: protocol, DSP and timing, editor
+npm run dev        # room server on :8787 + web app on http://localhost:5173
+npm test           # 60 tests: protocol, sync convergence, DSP and timing, server, editor
 npm run typecheck
-npm run build
+npm run build && npm start   # production: the server serves the built app on :8787
 ```
 
 Click anywhere or press a key to turn sound on (browsers block audio until you interact with the page), then press **Space**.
+
+## Jamming with someone
+
+1. Click **Start a jam →**. You get a room at `/r/<code>`, starting from whatever song you had open.
+2. Click **Copy invite link** and open it somewhere else:
+   - **Another tab or window.** Each tab is its own player with its own name.
+   - **Another device on your Wi-Fi.** Run `npm run dev -w @duty-cycle/web -- --host` alongside the server (or `HOST=0.0.0.0 npm start` for the production build) and open the network URL it prints.
+3. Edit away. Notes, volumes, BPM and channel settings sync for everyone, and you can see where each player's cursor is.
+
+Rooms live in the server's memory until M4 adds Postgres. If the server restarts, the first player to reconnect restores the room from their copy.
 
 ## Keys
 
@@ -49,14 +59,35 @@ Note keys use physical key positions, so the layout is the same on AZERTY or Dvo
 
 ```
 packages/
-  protocol/   Song model, edit ops (Zod), note names, timing math, demo song
+  protocol/   Song model, edit ops and wire messages (Zod), client sync logic, note names, timing
               "@duty-cycle/protocol/core" is the Zod-free half the audio thread imports
   engine/     ChipSynth + Sequencer (pure TS), the AudioWorklet, the main-thread ChipEngine
+  client/     RoomConnection: one room over a WebSocket, with optimistic edits and reconnects
 apps/
+  server/     Node + ws: rooms, edit ordering, presence, rate limits; serves the built web app
   web/        Vite + React tracker UI
 ```
 
-**Song and ops.** A song is four channels × N rows of `{ note, volume }` cells plus per-channel settings. Every change is an `Op` (`setNote`, `setVolume`, `clearCell`, `setBpm`, `setChannel`) applied by a pure `applyOp` function. In M0 the editor produces ops locally. In M1 the same ops go over the wire, the server puts them in one order, and every client runs the same `applyOp`.
+**Song and ops.** A song is four channels × N rows of `{ note, volume }` cells plus per-channel settings. Every change is an `Op` (`setNote`, `setVolume`, `clearCell`, `setBpm`, `setChannel`, `replaceSong`) applied by a pure `applyOp` function. The client, the server and the tests all use the same `applyOp`. Every op *sets* a value rather than adjusting one, so applying an op twice is harmless.
+
+**Shared editing** ([`sync.ts`](packages/protocol/src/sync.ts), [`room.ts`](apps/server/src/room.ts)). The server is the single source of order: each op it accepts gets the next sequence number and goes to everyone, its author included. A client keeps two things:
+
+- `confirmed`: the song exactly as the server has ordered it
+- `pending`: its own ops the server hasn't echoed back yet
+
+What you see is `confirmed` with `pending` replayed on top. Your edits appear instantly, and when two people hit the same cell, everyone ends up with whichever edit the server ordered last. No CRDT is needed, because a server already decides the order. A gap in sequence numbers means a missed message: the client reconnects and starts again from a snapshot.
+
+**Staying connected** ([`RoomConnection.ts`](packages/client/src/RoomConnection.ts)). On a drop it reconnects with exponential backoff and jitter. On reconnect it takes the server's snapshot and resends anything never confirmed, which is safe because ops can be applied twice. Its hello also offers the last confirmed song, so a restarted server gets the room back from the first player who returns.
+
+**Server hygiene** ([`server.ts`](apps/server/src/server.ts)):
+
+- every message is validated with Zod
+- messages are capped at 256 KB
+- each connection gets a token-bucket rate limit
+- rooms hold at most 8 players
+- empty rooms expire after 10 minutes
+- dead connections are dropped by a heartbeat
+- the first message must be a hello within 5 s
 
 **Synth** ([`synth.ts`](packages/engine/src/synth.ts)). Modelled on the NES sound chip (the 2A03):
 
@@ -82,12 +113,17 @@ apps/
 
 That last test is the foundation of M3.
 
+**Proving the sync**:
+
+- A property test ([`sync.test.ts`](packages/protocol/src/sync.test.ts)) uses fast-check. It runs a server and three clients through 500 random interleavings of edits and message deliveries, all fighting over the same few cells, and asserts that every client ends with the server's exact song. Breaking the sync logic makes it fail with a one-step counterexample.
+- Integration tests ([`server.test.ts`](apps/server/src/server.test.ts), [`client.test.ts`](apps/server/src/client.test.ts)) run real `RoomConnection`s against the real server. They cover concurrent edits converging, edits made while offline arriving after a reconnect, a server restart restoring the room, cursors, full rooms, bad hellos and rate limiting.
+
 ## Roadmap
 
 | | Milestone | Done when |
 |---|---|---|
 | ✅ | **M0: Single-player tracker** | AudioWorklet chip synth, 32-row pattern, tracker keyboard entry, play/stop, BPM |
-| | **M1: Rooms** | Share a link and others join. Edits are server-ordered and shown immediately; a joining player gets a snapshot; colored cursors show where everyone is |
+| ✅ | **M1: Rooms** | Share a link and others join. Edits are server-ordered and shown immediately; a joining player gets a snapshot; colored cursors show where everyone is |
 | | **M2: Synced transport** | NTP-style clock sync; every player's playhead is on the same step; a debug overlay shows clock offset and round-trip time |
 | | **M3: Edits land on the same beat** | Edits scheduled into the future; two headless clients with simulated lag and jitter produce identical audio event logs |
 | | **M4: Persistence and replay** | The edit log in Postgres; `/replay` page; WAV export |
