@@ -2,7 +2,7 @@
 
 A chiptune tracker for jamming together in the browser. Everyone in a room hears the same song, sample for sample, on the same beat.
 
-> **Status: M2.** Share a link, edit the same song together, and press Play: everyone hears the same row at the same moment, and tempo changes switch on the same row for everyone. Edits still take effect whenever they arrive; making them land on the same beat everywhere is M3. See the [roadmap](#roadmap).
+> **Status: M3.** Share a link, edit the same song together, and press Play. Everyone hears the same row at the same moment, and every edit and tempo change lands on the same row for everyone. In simulation, players on very different networks produce bit-identical audio. Persistence and replay are next (M4). See the [roadmap](#roadmap).
 
 ## Why this is hard
 
@@ -18,13 +18,14 @@ The pieces so far:
 - **M0:** a synth and sequencer that are **sample-accurate and deterministic**, and run on the audio thread.
 - **M1:** the shared song: one server-ordered stream of edits that every client converges on.
 - **M2:** a shared clock and transport, so every player's audio hits the same row at the same moment.
+- **M3:** edits scheduled onto a future row, so a change made by anyone starts on the same row for everyone.
 
 ## Run it
 
 ```bash
 npm install
 npm run dev        # room server on :8787 + web app on http://localhost:5173
-npm test           # 77 tests: protocol, sync convergence, clock sync, DSP and timing, server, editor
+npm test           # 93 tests: protocol, sync convergence, clock sync, same-beat edits, DSP and timing, server, editor
 npm run typecheck
 npm run build && npm start   # production: the server serves the built app on :8787
 ```
@@ -39,6 +40,7 @@ Click anywhere or press a key to turn sound on (browsers block audio until you i
    - **Another device on your Wi-Fi.** Run `npm run dev -w @duty-cycle/web -- --host` alongside the server (or `HOST=0.0.0.0 npm start` for the production build) and open the network URL it prints.
 3. Edit away. Notes, volumes, BPM and channel settings sync for everyone, and you can see where each player's cursor is.
 4. Press **Play**. It starts for everyone, on the same row, at the same moment. Press <kbd>`</kbd> to see the sync numbers: round trip, clock error bound, audio latency.
+5. Edit while it plays. Your change shows up right away, dimmed with a dotted underline, then becomes audible a row or two later, on the same row for everyone.
 
 Rooms live in the server's memory until M4 adds Postgres. If the server restarts, the first player to reconnect restores the room from their copy.
 
@@ -100,6 +102,16 @@ What you see is `confirmed` with `pending` replayed on top. Your edits appear in
   - a small correction never replays or skips a row
   - a tempo change anchored on a future row waits for that row, so everyone switches together
 
+**Edits on the beat** ([`sync.ts`](packages/protocol/src/sync.ts), [`room.ts`](apps/server/src/room.ts), [`sequencer.ts`](packages/engine/src/sequencer.ts)).
+
+- **Stamping:** during playback the server stamps every edit with the row it lands on. That's the first row at least one lead time ahead, and never earlier than the previous edit's row, so row order matches edit order.
+- **Three layers per player:** what's *audible*, ordered edits *scheduled* for a later row, and the player's own *pending* edits. The editor shows all three, and edits that aren't audible yet are marked.
+- **The audio thread** gets the audible song plus the queue and applies each edit just before its row plays, whenever the message arrived. So two players who got the same edit at different moments, both before its row, play the same samples.
+- **Tempo:** a BPM edit lands on the same row as the tempo switch, so the number on screen and the tempo you hear change together.
+- **Stops and restarts:** each Play starts a new *epoch*. Stopping or restarting lands everything still waiting, since those rows will never play.
+- **Late joiners and reconnects** get both what's audible and what's still due.
+- **The server** keeps the same sync state as a client, minus pending edits.
+
 **Server hygiene** ([`server.ts`](apps/server/src/server.ts)):
 
 - every message is validated with Zod
@@ -154,6 +166,19 @@ That last test is the foundation of M3.
 
 Same-machine clocks make this the easy case. Across a real network, the clock error bound in the <kbd>`</kbd> panel is the number that matters.
 
+**Proving the edits land together** ([`beat.test.ts`](apps/server/src/beat.test.ts)). This is M3's claim end to end. A real `Room` runs on a simulated network in 1 ms steps:
+
+- Two players connect, one 8 ms away and one 140–160 ms away on 60 ms of jitter.
+- They make 40 edits during playback, plus a tempo change and a duty-cycle change.
+- Each player feeds the real sequencer and synth exactly what the app feeds its audio thread, and renders 9 s of 48 kHz audio.
+- **The two renders are bit-identical.** The same holds for 5 random 3-player networks.
+- The negative control is a player whose real delay is far longer than it reports. It receives edits after their rows started, and its audio diverges.
+- Removing the server's lead time breaks every one of these tests.
+
+Engine tests ([`engine.test.ts`](packages/engine/src/engine.test.ts)) prove the same at the sample level for one edit. Whether it reaches the audio thread at frame 10 or at frame 47999, the output is identical to swapping in the edited song exactly on row 8. One frame late, it isn't.
+
+**In the browser:** two tabs received the same edit queued for the same row, about 250 ms before that row played.
+
 ## Roadmap
 
 | | Milestone | Done when |
@@ -161,7 +186,7 @@ Same-machine clocks make this the easy case. Across a real network, the clock er
 | ✅ | **M0: Single-player tracker** | AudioWorklet chip synth, 32-row pattern, tracker keyboard entry, play/stop, BPM |
 | ✅ | **M1: Rooms** | Share a link and others join. Edits are server-ordered and shown immediately; a joining player gets a snapshot; colored cursors show where everyone is |
 | ✅ | **M2: Synced transport** | NTP-style clock sync; every player's playhead is on the same step; a debug overlay shows clock offset and round-trip time |
-| | **M3: Edits land on the same beat** | Edits scheduled into the future; two headless clients with simulated lag and jitter produce identical audio event logs |
+| ✅ | **M3: Edits land on the same beat** | Edits scheduled onto a future row; players on simulated networks with very different lag and jitter render bit-identical audio |
 | | **M4: Persistence and replay** | The edit log in Postgres; `/replay` page; WAV export |
 
 Planned for after v1: live keyboard playing (each note quantized to the next beat everyone can reach), multi-pattern songs, an effects column, multiplayer undo, mobile.

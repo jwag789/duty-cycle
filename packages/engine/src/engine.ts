@@ -1,7 +1,7 @@
 import { framesPerRow, timeOfRow, type Song, type Transport } from '@duty-cycle/protocol/core';
 import { PROCESSOR_NAME, type FromWorklet, type ToWorklet } from './messages';
 import processorUrl from './processor.ts?worker&url';
-import type { Timing } from './sequencer';
+import type { QueuedOp, Timing } from './sequencer';
 
 interface ScheduledRow {
   row: number;
@@ -75,8 +75,12 @@ export class ChipEngine {
     return this.context.state === 'running' ? Promise.resolve() : this.context.resume();
   }
 
-  setSong(song: Song): void {
-    this.send({ type: 'song', song });
+  /**
+   * The song to play: what's audible now, plus edits that take effect from a
+   * later row. Each edit is applied on the audio thread just before its row.
+   */
+  setSong(song: Song, queue: readonly QueuedOp[] = []): void {
+    this.send({ type: 'song', song, queue: [...queue] });
   }
 
   /**

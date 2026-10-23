@@ -27,11 +27,20 @@ export const CursorSchema = z.object({
 
 export const TransportSchema = z.object({
   playing: z.boolean(),
+  epoch: z.number().int().nonnegative(),
   anchorTime: z.number().finite(),
   anchorRow: z.number().int().nonnegative(),
   bpm: z.number().int().positive(),
   rowsPerBeat: z.number().int().positive(),
 });
+
+/** Where an edit takes effect: absolute row `row` of transport epoch `epoch`. */
+export const LandingSchema = z.object({
+  epoch: z.number().int().nonnegative(),
+  row: z.number().int().nonnegative(),
+});
+
+export const ScheduledOpSchema = LandingSchema.extend({ op: OpSchema });
 
 export const PeerSchema = z.object({
   id: z.string(),
@@ -67,12 +76,16 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 export const ServerMessageSchema = z.discriminatedUnion('type', [
-  /** The first message on every connection: the room as it is right now. */
+  /**
+   * The first message on every connection: the room as it is right now.
+   * `song` is what's audible; `scheduled` are ordered edits still waiting for their row.
+   */
   z.object({
     type: z.literal('welcome'),
     you: PeerSchema,
     seq: z.number().int().nonnegative(),
     song: SongSchema,
+    scheduled: z.array(ScheduledOpSchema),
     peers: z.array(PeerSchema),
     transport: TransportSchema,
   }),
@@ -83,6 +96,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
     op: OpSchema,
     from: z.string(),
     clientSeq: z.number().int().nonnegative(),
+    /** The row it's heard from, during playback. Null when stopped: it applies at once. */
+    at: LandingSchema.nullable(),
   }),
   z.object({ type: z.literal('joined'), peer: PeerSchema }),
   z.object({ type: z.literal('left'), id: z.string() }),
@@ -97,6 +112,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
 export type Cursor = z.infer<typeof CursorSchema>;
 export type Column = Cursor['column'];
 export type Peer = z.infer<typeof PeerSchema>;
+export type Landing = z.infer<typeof LandingSchema>;
+export type ScheduledOp = z.infer<typeof ScheduledOpSchema>;
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 export type OpMessage = Extract<ClientMessage, { type: 'op' }>;

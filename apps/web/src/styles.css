@@ -667,3 +667,10 @@ input:focus-visible {
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+
+/* An edit that's on screen but not in the music yet: it lands on its row. */
+.is-waiting {
+  opacity: 0.6;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}

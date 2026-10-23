@@ -3,10 +3,14 @@ import {
   applyRemote,
   ClockEstimator,
   CLOSE,
+  confirmedSong,
   createSync,
   parseServerMessage,
+  rowAt,
   sampleFromPing,
+  settle,
   STOPPED,
+  timeOfRow,
   viewSong,
   type ClientMessage,
   type Cursor,
@@ -32,8 +36,12 @@ export type RoomStatus = 'connecting' | 'live' | 'reconnecting' | 'full' | 'fail
 
 export interface RoomSnapshot {
   readonly status: RoomStatus;
-  /** Null until the first welcome arrives. */
+  /** What the editor shows: everything, your unconfirmed edits included. Null until the first welcome. */
   readonly song: Song | null;
+  /** What's being heard right now. Edits in `song` but not here are still waiting for their row. */
+  readonly audible: Song | null;
+  /** Ordered edits still waiting for their row in the current epoch, for the audio thread. */
+  readonly queue: readonly { row: number; op: Op }[];
   readonly me: Peer | null;
   /** Everyone else in the room. */
   readonly peers: readonly Peer[];
@@ -94,10 +102,13 @@ export class RoomConnection {
   private transport: Transport = STOPPED;
   private readonly clock = new ClockEstimator();
   private pingTimer: ReturnType<typeof setTimeout> | null = null;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private pingsSent = 0;
   private snapshot: RoomSnapshot = {
     status: 'connecting',
     song: null,
+    audible: null,
+    queue: [],
     me: null,
     peers: [],
     transport: STOPPED,
@@ -120,7 +131,7 @@ export class RoomConnection {
       const { room, name } = this.options;
       // After a drop, offer the last song the server confirmed. If the server
       // restarted and lost the room, the first player back restores it.
-      const seed = this.sync?.confirmed ?? this.options.seed;
+      const seed = this.sync ? confirmedSong(this.sync) : this.options.seed;
       this.send({ type: 'hello', room, name, ...(seed ? { seed } : {}) });
     };
     socket.onmessage = (event) => {
@@ -160,6 +171,7 @@ export class RoomConnection {
   close(): void {
     this.closed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.settleTimer) clearTimeout(this.settleTimer);
     this.stopPinging();
     const socket = this.socket;
     this.socket = null;
@@ -184,7 +196,7 @@ export class RoomConnection {
         // Anything still pending was never confirmed on the old connection. Ops
         // set values rather than adjust them, so resending is safe.
         const unconfirmed = this.sync?.pending.map((entry) => entry.op) ?? [];
-        this.sync = createSync(message.song, message.seq);
+        this.sync = createSync(message.song, message.seq, message.scheduled);
         this.me = message.you;
         this.peers = new Map(message.peers.map((peer) => [peer.id, peer]));
         this.transport = message.transport;
@@ -229,7 +241,30 @@ export class RoomConnection {
         console.warn(`[duty-cycle] server: ${message.message}`);
         return;
     }
+    this.settleDue();
     this.emit();
+  }
+
+  /**
+   * Lands scheduled edits whose row is now being heard, then sets a timer for
+   * the next one, so `audible` tracks what's coming out of the speakers.
+   */
+  private settleDue(): void {
+    if (this.settleTimer) clearTimeout(this.settleTimer);
+    this.settleTimer = null;
+    if (!this.sync) return;
+
+    const row = this.transport.playing ? Math.floor(rowAt(this.transport, this.serverNow())) : null;
+    this.sync = settle(this.sync, this.transport, row);
+
+    const next = this.sync.scheduled[0];
+    if (next && this.transport.playing && next.epoch === this.transport.epoch) {
+      const wait = timeOfRow(this.transport, next.row) - this.serverNow();
+      this.settleTimer = setTimeout(() => {
+        this.settleDue();
+        this.emit();
+      }, Math.max(0, wait));
+    }
   }
 
   private sendOp(op: Op): void {
@@ -278,9 +313,14 @@ export class RoomConnection {
   }
 
   private emit(): void {
+    const sync = this.sync;
     this.snapshot = {
       status: this.status,
-      song: this.sync ? viewSong(this.sync) : null,
+      song: sync ? viewSong(sync) : null,
+      audible: sync ? sync.audible : null,
+      queue: sync
+        ? sync.scheduled.filter((entry) => entry.epoch === this.transport.epoch).map(({ row, op }) => ({ row, op }))
+        : [],
       me: this.me,
       peers: [...this.peers.values()],
       transport: this.transport,

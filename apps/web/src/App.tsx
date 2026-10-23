@@ -14,6 +14,8 @@ import { useChipEngine, usePlayhead } from './useChipEngine';
 import { usePlayback } from './usePlayback';
 import { useSoloSong } from './useSoloSong';
 
+const NO_QUEUE: readonly never[] = [];
+
 export function App() {
   const [room, setRoom] = useState(() => roomFromPath(location.pathname));
   // The song a new jam starts from; only the person who starts it sends one.
@@ -37,8 +39,8 @@ export function App() {
 
   // Dev-only handle for poking at timing from the console.
   useEffect(() => {
-    if (import.meta.env.DEV) Object.assign(window, { __dutyCycle: { engine, transport: playback.transport } });
-  }, [engine, playback.transport]);
+    if (import.meta.env.DEV) Object.assign(window, { __dutyCycle: { engine, connection, transport: playback.transport } });
+  }, [engine, connection, playback.transport]);
 
   useEffect(() => {
     const onPopState = () => setRoom(roomFromPath(location.pathname));
@@ -46,9 +48,13 @@ export function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
+  // The engine plays what everyone hears: in a jam that's the audible song plus
+  // edits queued for their rows, not your own edits the server hasn't ordered yet.
+  const audible = room ? snapshot.audible : solo.song;
+  const queue = room ? snapshot.queue : NO_QUEUE;
   useEffect(() => {
-    if (song) engine?.setSong(song);
-  }, [engine, song]);
+    if (audible) engine?.setSong(audible, queue);
+  }, [engine, audible, queue]);
 
   useEffect(() => {
     engine?.setMutes(mutes);
@@ -211,6 +217,7 @@ export function App() {
               playRow={playRow}
               mutes={mutes}
               peers={room ? snapshot.peers : []}
+              audible={audible ?? song}
               onSelect={select}
             />
           </div>

@@ -1,4 +1,4 @@
-import { framesPerRow, type Song } from '@duty-cycle/protocol/core';
+import { applyOp, framesPerRow, type Op, type Song } from '@duty-cycle/protocol/core';
 import type { ChipSynth } from './synth';
 
 export interface RowEvent {
@@ -8,6 +8,12 @@ export interface RowEvent {
   absRow: number;
   /** The absolute audio frame the row started on. */
   frame: number;
+}
+
+/** An edit that takes effect from absolute row `row` on. */
+export interface QueuedOp {
+  row: number;
+  op: Op;
 }
 
 /** Absolute row `anchorRow` starts on `anchorFrame`, and rows are `framesPerRow` apart from there. */
@@ -35,9 +41,14 @@ const EPSILON = 1e-6;
  *   boundary slightly. It never replays a row.
  * - A change anchored on a future row (a tempo change) waits until playback
  *   reaches that row, so every client switches on the same row.
+ *
+ * Edits work the same way: each queued edit is applied just before its row
+ * plays, whenever it arrived. Two machines that received the same queue at
+ * different moments, both before the row, play identical samples.
  */
 export class Sequencer {
   private song: Song;
+  private queue: QueuedOp[] = [];
   private current: Timing | null = null;
   private pending: Timing | null = null;
   private nextAbs = 0;
@@ -56,10 +67,16 @@ export class Sequencer {
     return this.current !== null;
   }
 
-  /** Swaps in new notes and settings. Tempo comes from the timing, not the song. */
-  setSong(song: Song): void {
+  /**
+   * Swaps in the audible song plus edits still waiting for their rows. Edits
+   * for rows already played (or with nothing playing) apply at once. Tempo
+   * comes from the timing, not the song.
+   */
+  setSong(song: Song, queue: readonly QueuedOp[] = []): void {
     this.song = song;
-    this.synth.setSettings(song.channels);
+    this.queue = [...queue];
+    this.land(this.current ? this.nextAbs - 1 : Infinity);
+    this.synth.setSettings(this.song.channels);
   }
 
   /** Follows `timing` from audio frame `frame` on, or stops when it's null. */
@@ -73,6 +90,7 @@ export class Sequencer {
       this.pending = null;
       this.lastAbs = null;
       this.nextAbs = Math.max(timing.anchorRow, firstRowFrom(timing, frame));
+      this.land(this.nextAbs - 1);
       return;
     }
     if (timing.anchorRow > this.nextAbs) {
@@ -83,6 +101,7 @@ export class Sequencer {
     this.pending = null;
     const first = firstRowFrom(timing, frame);
     this.nextAbs = this.lastAbs === null ? Math.max(timing.anchorRow, first) : Math.max(this.lastAbs + 1, first);
+    this.land(this.nextAbs - 1);
   }
 
   /** Plays from `fromRow` at the song's own tempo, starting exactly on `atFrame`. */
@@ -96,6 +115,7 @@ export class Sequencer {
     this.current = null;
     this.pending = null;
     this.lastAbs = null;
+    this.land(Infinity);
     this.synth.releaseAll();
   }
 
@@ -111,8 +131,19 @@ export class Sequencer {
     return this.synth.render();
   }
 
+  /** Applies queued edits for rows up to `row`. */
+  private land(row: number): void {
+    let landed = false;
+    while (this.queue.length > 0 && this.queue[0]!.row <= row) {
+      this.song = applyOp(this.song, this.queue.shift()!.op);
+      landed = true;
+    }
+    if (landed) this.synth.setSettings(this.song.channels);
+  }
+
   private trigger(frame: number): void {
     const abs = this.nextAbs;
+    this.land(abs);
     const row = ((abs % this.song.rows) + this.song.rows) % this.song.rows;
     this.song.cells.forEach((column, channel) => {
       const cell = column[row];

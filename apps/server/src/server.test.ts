@@ -193,7 +193,7 @@ describe('shared transport', () => {
     const forB = b.client.next('transport');
     a.client.send({ type: 'transport', action: 'play', fromRow: 4 });
     const expected = {
-      transport: { playing: true, anchorTime: 50_000 + 270, anchorRow: 4, bpm: 150, rowsPerBeat: 4 },
+      transport: { playing: true, epoch: 1, anchorTime: 50_000 + 270, anchorRow: 4, bpm: 150, rowsPerBeat: 4 },
       by: a.welcome.you.id,
     };
     expect(await forA).toMatchObject(expected);
@@ -215,7 +215,7 @@ describe('shared transport', () => {
     a.client.send({ type: 'op', clientSeq: 0, op: { type: 'setBpm', bpm: 60 } });
     const { transport } = await changed;
     // Lead 220 ms → earliest 51_220 = row 8 exactly, at the old tempo's time for row 8.
-    expect(transport).toEqual({ playing: true, anchorRow: 8, anchorTime: start.anchorTime + 8 * 125, bpm: 60, rowsPerBeat: 4 });
+    expect(transport).toEqual({ playing: true, epoch: 1, anchorRow: 8, anchorTime: start.anchorTime + 8 * 125, bpm: 60, rowsPerBeat: 4 });
   });
 
   it('stops for everyone, and stops by itself when the room empties', async () => {
@@ -236,5 +236,87 @@ describe('shared transport', () => {
     await settle();
     const back = await join('room123', 'Ada again');
     expect(back.welcome.transport.playing).toBe(false);
+  });
+});
+
+describe('edits on the beat', () => {
+  async function playingRoom(bpm = 120) {
+    const a = await join('room123', 'Ada', emptySong({ bpm })); // 120 bpm: 125 ms per row
+    const started = a.client.next('transport');
+    a.client.send({ type: 'transport', action: 'play' });
+    const { transport } = await started; // row 0 at 50_220 (lead 220 with no RTTs known)
+    return { a, transport };
+  }
+  const setNote = (row: number, note: number) => ({ type: 'setNote' as const, channel: 0, row, note });
+
+  it('lands an edit on the first row at least one lead time ahead', async () => {
+    const { a } = await playingRoom();
+    clock = 51_000; // row 6.24 is playing; 51_220 is row 8 exactly
+    const echo = a.client.next('op');
+    a.client.send({ type: 'op', clientSeq: 0, op: setNote(3, 64) });
+    expect((await echo).at).toEqual({ epoch: 1, row: 8 });
+  });
+
+  it('never lands a later edit on an earlier row', async () => {
+    const { a } = await playingRoom();
+    clock = 51_000;
+    const first = a.client.next('op');
+    a.client.send({ type: 'op', clientSeq: 0, op: setNote(0, 60) });
+    expect((await first).at!.row).toBe(8);
+
+    // A player with a 900 ms round trip reports in, so the lead grows… then leaves, so it shrinks again.
+    const slow = await join('room123', 'Slow');
+    slow.client.send({ type: 'ping', id: 0, t0: 0, rtt: 900 });
+    await slow.client.next('pong');
+    slow.client.socket.close();
+    await a.client.next('left');
+
+    const second = a.client.next('op');
+    a.client.send({ type: 'op', clientSeq: 1, op: setNote(1, 62) });
+    expect((await second).at!.row).toBeGreaterThanOrEqual(8);
+  });
+
+  it('gives a late joiner what is audible now and what is still due', async () => {
+    const { a } = await playingRoom();
+    clock = 51_000;
+    a.client.send({ type: 'op', clientSeq: 0, op: setNote(3, 64) }); // lands on row 8
+    await a.client.next('op');
+
+    clock = 51_100; // row 7: not landed yet
+    const early = await join('room123', 'Ben');
+    expect(early.welcome.song.cells[0]![3]!.note).toBeNull();
+    expect(early.welcome.scheduled).toEqual([{ epoch: 1, row: 8, op: setNote(3, 64) }]);
+
+    clock = 51_300; // row 8.6: landed
+    const late = await join('room123', 'Cy');
+    expect(late.welcome.song.cells[0]![3]!.note).toBe(64);
+    expect(late.welcome.scheduled).toEqual([]);
+  });
+
+  it('lands everything at once when playback stops', async () => {
+    const { a } = await playingRoom();
+    clock = 51_000;
+    a.client.send({ type: 'op', clientSeq: 0, op: setNote(3, 64) });
+    await a.client.next('op');
+    a.client.send({ type: 'transport', action: 'stop' });
+    await a.client.next('transport');
+
+    const b = await join('room123', 'Ben');
+    expect(b.welcome.song.cells[0]![3]!.note).toBe(64);
+    expect(b.welcome.scheduled).toEqual([]);
+
+    // And with nothing playing, edits apply at once.
+    const echo = a.client.next('op');
+    a.client.send({ type: 'op', clientSeq: 1, op: setNote(4, 65) });
+    expect((await echo).at).toBeNull();
+  });
+
+  it('switches tempo on the same row the BPM edit lands on', async () => {
+    const { a } = await playingRoom();
+    clock = 51_000;
+    const op = a.client.next('op');
+    const transport = a.client.next('transport');
+    a.client.send({ type: 'op', clientSeq: 0, op: { type: 'setBpm', bpm: 90 } });
+    expect((await op).at!.row).toBe((await transport).transport.anchorRow);
   });
 });

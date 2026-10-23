@@ -3,7 +3,7 @@ import { RoomConnection, type RoomSnapshot } from '@duty-cycle/client';
 import { STOPPED, type Song } from '@duty-cycle/protocol';
 import { playerName, socketUrl } from './session';
 
-const IDLE: RoomSnapshot = { status: 'connecting', song: null, me: null, peers: [], transport: STOPPED, clock: null };
+const IDLE: RoomSnapshot = { status: 'connecting', song: null, audible: null, queue: [], me: null, peers: [], transport: STOPPED, clock: null };
 const noSubscribe = () => () => {};
 const idleSnapshot = () => IDLE;
 

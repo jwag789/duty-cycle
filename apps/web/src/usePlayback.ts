@@ -42,7 +42,7 @@ export function usePlayback(
 
   const play = useCallback(() => {
     if (room) connection?.play(0);
-    else if (song) setSolo(startTransport(song, 0, performance.now() + SOLO_LEAD_MS));
+    else if (song) setSolo((current) => startTransport(current, song, 0, performance.now() + SOLO_LEAD_MS));
   }, [room, connection, song]);
 
   const stop = useCallback(() => {

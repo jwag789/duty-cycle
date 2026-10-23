@@ -1,16 +1,25 @@
 import {
-  applyOp,
+  applyRemote,
+  confirmedSong,
+  createSync,
   leadTimeMs,
   MAX_PEERS,
   retempo,
+  rowAt,
+  rowStartingAfter,
+  settle,
   startTransport,
   STOPPED,
   stopTransport,
+  timeOfRow,
   type Cursor,
+  type Landing,
   type Op,
   type Peer,
   type ServerMessage,
+  type ServerOpMessage,
   type Song,
+  type SyncState,
   type Transport,
 } from '@duty-cycle/protocol';
 
@@ -34,11 +43,17 @@ interface Member {
  * gets the next sequence number and goes to everyone, its author included.
  * Also owns the transport, so there is exactly one answer to "which row is
  * playing at server time T".
+ *
+ * During playback each edit is stamped with the row it lands on, at least one
+ * lead time ahead, so every player has it before that row plays. The room
+ * keeps the same three-layer sync state as a client (with nothing pending),
+ * so it can hand a newcomer exactly what's audible and what's still due.
  */
 export class Room {
-  private song: Song;
-  private seq = 0;
+  private state: SyncState;
   private transport: Transport;
+  /** Landing rows never go backwards, even if the lead shrinks: order is row order. */
+  private lastLanding = 0;
   private readonly members = new Map<string, Member>();
 
   constructor(
@@ -46,7 +61,7 @@ export class Room {
     song: Song,
     private readonly now: () => number,
   ) {
-    this.song = song;
+    this.state = createSync(song, 0);
     this.transport = { ...STOPPED, bpm: song.bpm, rowsPerBeat: song.rowsPerBeat };
   }
 
@@ -63,11 +78,13 @@ export class Room {
     const color = COLORS.find((c) => !used.has(c)) ?? COLORS[this.members.size % COLORS.length]!;
     const peer: Peer = { id: client.id, name, color, cursor: null };
 
+    this.settle();
     client.send({
       type: 'welcome',
       you: peer,
-      seq: this.seq,
-      song: this.song,
+      seq: this.state.seq,
+      song: this.state.audible,
+      scheduled: [...this.state.scheduled],
       peers: [...this.members.values()].map((member) => member.peer),
       transport: this.transport,
     });
@@ -80,18 +97,27 @@ export class Room {
     if (!this.members.delete(id)) return;
     this.broadcast({ type: 'left', id });
     // Nobody left to hear it: don't let the loop run on in an empty room.
-    if (this.members.size === 0) this.transport = stopTransport(this.transport);
+    if (this.members.size === 0) this.stopAndSettle();
   }
 
   applyClientOp(id: string, clientSeq: number, op: Op): void {
     if (!this.members.has(id)) return;
-    this.song = applyOp(this.song, op);
-    this.seq++;
-    this.broadcast({ type: 'op', seq: this.seq, op, from: id, clientSeq });
+    this.settle();
 
-    // A tempo change during playback lands on a row far enough ahead that
-    // everyone switches on the same row.
-    const next = retempo(this.transport, this.song, this.now() + this.lead());
+    let at: Landing | null = null;
+    if (this.transport.playing) {
+      const row = Math.max(this.lastLanding, rowStartingAfter(this.transport, this.now() + this.lead()));
+      this.lastLanding = row;
+      at = { epoch: this.transport.epoch, row };
+    }
+    const message: ServerOpMessage = { type: 'op', seq: this.state.seq + 1, op, from: id, clientSeq, at };
+    this.state = applyRemote(this.state, message, '')!;
+    this.broadcast(message);
+
+    // A tempo change lands on the same row as the edit that made it, so the
+    // BPM everyone sees and the tempo everyone hears switch together.
+    const switchAt = at ? timeOfRow(this.transport, at.row) : this.now();
+    const next = retempo(this.transport, confirmedSong(this.state), switchAt);
     if (next !== this.transport) {
       this.transport = next;
       if (next.playing) this.broadcast({ type: 'transport', transport: next, by: id });
@@ -100,13 +126,16 @@ export class Room {
 
   play(id: string, fromRow = 0): void {
     if (!this.members.has(id)) return;
-    this.transport = startTransport(this.song, fromRow, this.now() + this.lead());
+    // Edits waiting on the old epoch's rows land now; the new epoch counts from scratch.
+    this.state = settle(this.state, stopTransport(this.transport), null);
+    this.lastLanding = 0;
+    this.transport = startTransport(this.transport, this.state.audible, fromRow, this.now() + this.lead());
     this.broadcast({ type: 'transport', transport: this.transport, by: id });
   }
 
   stop(id: string): void {
     if (!this.members.has(id) || !this.transport.playing) return;
-    this.transport = stopTransport(this.transport);
+    this.stopAndSettle();
     this.broadcast({ type: 'transport', transport: this.transport, by: id });
   }
 
@@ -120,6 +149,17 @@ export class Room {
     if (!member) return;
     member.peer = { ...member.peer, cursor };
     this.broadcast({ type: 'cursor', id, cursor }, id);
+  }
+
+  private stopAndSettle(): void {
+    this.transport = stopTransport(this.transport);
+    this.state = settle(this.state, this.transport, null);
+  }
+
+  /** Moves edits whose row has started into the audible song. */
+  private settle(): void {
+    const row = this.transport.playing ? Math.floor(rowAt(this.transport, this.now())) : null;
+    this.state = settle(this.state, this.transport, row);
   }
 
   /** How far ahead to schedule, from the slowest member's round trip. */

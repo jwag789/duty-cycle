@@ -176,3 +176,46 @@ describe('determinism', () => {
     expect(rms(a.samples, 0, SR * 2)).toBeGreaterThan(0.05);
   });
 });
+
+describe('queued edits', () => {
+  // 120 bpm, 4 rows per beat at 48 kHz: row 8 starts on frame 48000.
+  const base = withNotes(emptySong(), [[2, 0, 45], [0, 0, 60]]);
+  const edit = { row: 8, op: { type: 'setNote' as const, channel: 0, row: 8, note: 72 } };
+
+  function render(actions: Record<number, (s: Sequencer) => void>): Float32Array {
+    const synth = new ChipSynth(SR, base.channels);
+    const sequencer = new Sequencer(synth, base);
+    sequencer.play(0, 0);
+    const out = new Float32Array(6000 * 12);
+    for (let frame = 0; frame < out.length; frame++) {
+      actions[frame]?.(sequencer);
+      out[frame] = sequencer.tick(frame);
+    }
+    return out;
+  }
+
+  // The reference: the edited song swapped in exactly as row 8 starts.
+  const reference = render({ 48000: (s) => s.setSong(applyOp(base, edit.op)) });
+
+  it('plays an edit from its row, sample for sample, however early it arrived', () => {
+    expect(render({ 10: (s) => s.setSong(base, [edit]) })).toEqual(reference);
+    expect(render({ 30000: (s) => s.setSong(base, [edit]) })).toEqual(reference);
+    expect(render({ 47999: (s) => s.setSong(base, [edit]) })).toEqual(reference);
+  });
+
+  it('cannot fix an edit that arrives after its row started', () => {
+    expect(render({ 48001: (s) => s.setSong(base, [edit]) })).not.toEqual(reference);
+  });
+
+  it('applies everything at once when nothing is playing', () => {
+    const playFrom8 = (setup: (s: Sequencer) => void) => {
+      const sequencer = new Sequencer(new ChipSynth(SR, base.channels), base);
+      setup(sequencer);
+      sequencer.play(8, 0);
+      return Float32Array.from({ length: 6000 }, (_, frame) => sequencer.tick(frame));
+    };
+    const queuedWhileStopped = playFrom8((s) => s.setSong(base, [edit]));
+    const alreadyApplied = playFrom8((s) => s.setSong(applyOp(base, edit.op)));
+    expect(queuedWhileStopped).toEqual(alreadyApplied);
+  });
+});

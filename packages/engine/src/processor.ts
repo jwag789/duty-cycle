@@ -50,7 +50,7 @@ class ChipProcessor extends AudioWorkletProcessor {
   private receive(message: ToWorklet): void {
     switch (message.type) {
       case 'song':
-        this.sequencer.setSong(message.song);
+        this.sequencer.setSong(message.song, message.queue);
         break;
       case 'timing':
         this.incoming = { timing: message.timing };

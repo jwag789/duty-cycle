@@ -9,12 +9,14 @@ interface PatternGridProps {
   mutes: boolean[];
   /** Other players, drawn as coloured cursors. */
   peers: readonly Peer[];
+  /** What's being heard. Cells that differ are edits still waiting for their row. */
+  audible: Song;
   onSelect: (cursor: Cursor) => void;
 }
 
 const NO_PEERS: readonly Peer[] = [];
 
-export function PatternGrid({ song, cursor, playRow, mutes, peers, onSelect }: PatternGridProps) {
+export function PatternGrid({ song, cursor, playRow, mutes, peers, audible, onSelect }: PatternGridProps) {
   const cursorRowRef = useRef<HTMLDivElement>(null);
 
   const peersByRow = useMemo(() => {
@@ -42,6 +44,7 @@ export function PatternGrid({ song, cursor, playRow, mutes, peers, onSelect }: P
           ref={row === cursor.row ? cursorRowRef : undefined}
           row={row}
           cells={song.cells.map((column) => column[row]!)}
+          heard={audible.cells.map((column) => column[row])}
           beat={row % song.rowsPerBeat === 0}
           bar={row % barRows === 0}
           playing={row === playRow}
@@ -59,6 +62,7 @@ interface RowProps {
   ref?: Ref<HTMLDivElement>;
   row: number;
   cells: Cell[];
+  heard: (Cell | undefined)[];
   beat: boolean;
   bar: boolean;
   playing: boolean;
@@ -69,7 +73,7 @@ interface RowProps {
 }
 
 const Row = memo(
-  function Row({ ref, row, cells, beat, bar, playing, cursor, mutes, peers, onSelect }: RowProps) {
+  function Row({ ref, row, cells, heard, beat, bar, playing, cursor, mutes, peers, onSelect }: RowProps) {
     const classes = ['grid-row'];
     if (beat) classes.push('is-beat');
     if (bar) classes.push('is-bar');
@@ -83,6 +87,7 @@ const Row = memo(
         </span>
         {cells.map((cell, channel) => {
           const here = peers.filter((p) => p.cursor?.channel === channel);
+          const before = heard[channel];
           return (
             <div
               key={channel}
@@ -95,6 +100,7 @@ const Row = memo(
                 column="note"
                 text={cell.note === null ? '---' : noteName(cell.note)}
                 empty={cell.note === null}
+                waiting={before !== undefined && before.note !== cell.note}
                 active={cursor?.channel === channel && cursor.column === 'note'}
                 peers={peers.filter((p) => p.cursor?.channel === channel && p.cursor.column === 'note')}
                 onSelect={() => onSelect({ row, channel, column: 'note' })}
@@ -103,6 +109,7 @@ const Row = memo(
                 column="volume"
                 text={cell.volume === null ? '·' : cell.volume.toString(16).toUpperCase()}
                 empty={cell.volume === null}
+                waiting={before !== undefined && before.volume !== cell.volume}
                 active={cursor?.channel === channel && cursor.column === 'volume'}
                 peers={peers.filter((p) => p.cursor?.channel === channel && p.cursor.column === 'volume')}
                 onSelect={() => onSelect({ row, channel, column: 'volume' })}
@@ -125,6 +132,7 @@ const Row = memo(
   },
   (prev, next) =>
     prev.cells.every((cell, i) => cell === next.cells[i]) &&
+    prev.heard.every((cell, i) => cell === next.heard[i]) &&
     prev.beat === next.beat &&
     prev.bar === next.bar &&
     prev.playing === next.playing &&
@@ -140,14 +148,17 @@ interface CellPartProps {
   column: Column;
   text: string;
   empty: boolean;
+  /** Edited, but not heard yet: the edit is waiting for its row. */
+  waiting: boolean;
   active: boolean;
   peers: readonly Peer[];
   onSelect: () => void;
 }
 
-function CellPart({ column, text, empty, active, peers, onSelect }: CellPartProps) {
+function CellPart({ column, text, empty, waiting, active, peers, onSelect }: CellPartProps) {
   const classes = [column === 'note' ? 'cell-note' : 'cell-volume'];
   if (empty) classes.push('is-empty');
+  if (waiting) classes.push('is-waiting');
   if (text === '===') classes.push('is-off');
   if (active) classes.push('is-caret');
   const first = peers[0];

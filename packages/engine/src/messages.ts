@@ -1,9 +1,10 @@
 import type { Song } from '@duty-cycle/protocol/core';
-import type { Timing } from './sequencer';
+import type { QueuedOp, Timing } from './sequencer';
 
 /** Main thread → AudioWorklet. */
 export type ToWorklet =
-  | { type: 'song'; song: Song }
+  /** The audible song, plus edits waiting for their rows. */
+  | { type: 'song'; song: Song; queue: QueuedOp[] }
   /** Where rows fall on the audio clock; null stops playback. */
   | { type: 'timing'; timing: Timing | null }
   | { type: 'preview'; channel: number; note: number; volume: number }

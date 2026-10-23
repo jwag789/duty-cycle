@@ -8,13 +8,18 @@ import { secondsPerRow } from './timing';
  */
 export interface Transport {
   playing: boolean;
+  /**
+   * Bumped on every start. Row numbers only mean something within one epoch:
+   * a restart begins counting again, while a tempo change keeps counting.
+   */
+  epoch: number;
   anchorTime: number;
   anchorRow: number;
   bpm: number;
   rowsPerBeat: number;
 }
 
-export const STOPPED: Transport = Object.freeze({ playing: false, anchorTime: 0, anchorRow: 0, bpm: 120, rowsPerBeat: 4 });
+export const STOPPED: Transport = Object.freeze({ playing: false, epoch: 0, anchorTime: 0, anchorRow: 0, bpm: 120, rowsPerBeat: 4 });
 
 export function msPerRow(transport: Pick<Transport, 'bpm' | 'rowsPerBeat'>): number {
   return secondsPerRow(transport.bpm, transport.rowsPerBeat) * 1000;
@@ -29,8 +34,21 @@ export function timeOfRow(transport: Transport, row: number): number {
   return transport.anchorTime + (row - transport.anchorRow) * msPerRow(transport);
 }
 
-export function startTransport(tempo: Pick<Transport, 'bpm' | 'rowsPerBeat'>, fromRow: number, at: number): Transport {
-  return { playing: true, anchorTime: at, anchorRow: fromRow, bpm: tempo.bpm, rowsPerBeat: tempo.rowsPerBeat };
+/** Starts a new epoch after `previous`, with row `fromRow` at time `at`. */
+export function startTransport(
+  previous: Transport,
+  tempo: Pick<Transport, 'bpm' | 'rowsPerBeat'>,
+  fromRow: number,
+  at: number,
+): Transport {
+  return {
+    playing: true,
+    epoch: previous.epoch + 1,
+    anchorTime: at,
+    anchorRow: fromRow,
+    bpm: tempo.bpm,
+    rowsPerBeat: tempo.rowsPerBeat,
+  };
 }
 
 export function stopTransport(transport: Transport): Transport {
@@ -45,8 +63,16 @@ export function stopTransport(transport: Transport): Transport {
 export function retempo(transport: Transport, tempo: Pick<Transport, 'bpm' | 'rowsPerBeat'>, at: number): Transport {
   if (transport.bpm === tempo.bpm && transport.rowsPerBeat === tempo.rowsPerBeat) return transport;
   if (!transport.playing) return { ...transport, bpm: tempo.bpm, rowsPerBeat: tempo.rowsPerBeat };
-  const row = Math.max(transport.anchorRow, Math.ceil(rowAt(transport, at) - 1e-9));
-  return { playing: true, anchorTime: timeOfRow(transport, row), anchorRow: row, bpm: tempo.bpm, rowsPerBeat: tempo.rowsPerBeat };
+  const row = rowStartingAfter(transport, at);
+  return { ...transport, anchorTime: timeOfRow(transport, row), anchorRow: row, bpm: tempo.bpm, rowsPerBeat: tempo.rowsPerBeat };
+}
+
+/**
+ * The first row that starts at or after `time`: the earliest row an edit made
+ * now can land on, if `time` includes the lead.
+ */
+export function rowStartingAfter(transport: Transport, time: number): number {
+  return Math.max(transport.anchorRow, Math.ceil(rowAt(transport, time) - 1e-9));
 }
 
 const DEFAULT_RTT_MS = 200;

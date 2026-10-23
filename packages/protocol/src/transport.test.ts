@@ -1,15 +1,27 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { ClockEstimator, sampleFromPing } from './clock';
-import { leadTimeMs, msPerRow, retempo, rowAt, startTransport, timeOfRow, type Transport } from './transport';
+import { leadTimeMs, msPerRow, retempo, rowAt, rowStartingAfter, startTransport, STOPPED, timeOfRow, type Transport } from './transport';
 
 describe('transport', () => {
-  const playing = startTransport({ bpm: 120, rowsPerBeat: 4 }, 0, 10_000); // 125 ms per row
+  const playing = startTransport(STOPPED, { bpm: 120, rowsPerBeat: 4 }, 0, 10_000); // 125 ms per row
 
   it('maps rows to times and back', () => {
     expect(msPerRow(playing)).toBe(125);
     expect(timeOfRow(playing, 8)).toBe(11_000);
     expect(rowAt(playing, 11_000)).toBe(8);
+  });
+
+  it('starts a new epoch on every start, and keeps it across tempo changes', () => {
+    expect(playing.epoch).toBe(1);
+    expect(startTransport(playing, playing, 0, 0).epoch).toBe(2);
+    expect(retempo(playing, { bpm: 90, rowsPerBeat: 4 }, 11_000).epoch).toBe(1);
+  });
+
+  it('finds the first row starting at or after a time', () => {
+    expect(rowStartingAfter(playing, 11_000)).toBe(8);
+    expect(rowStartingAfter(playing, 11_001)).toBe(9);
+    expect(rowStartingAfter(playing, 0)).toBe(0); // never before the anchor
   });
 
   it('changes tempo on the first row boundary after the given time, without a jump', () => {
@@ -26,7 +38,7 @@ describe('transport', () => {
         fc.integer({ min: 40, max: 300 }),
         fc.double({ min: 0, max: 60_000, noNaN: true }),
         (from, to, after) => {
-          const before = startTransport({ bpm: from, rowsPerBeat: 4 }, 0, 0);
+          const before = startTransport(STOPPED, { bpm: from, rowsPerBeat: 4 }, 0, 0);
           const next = retempo(before, { bpm: to, rowsPerBeat: 4 }, after);
           if (from === to) {
             expect(next).toBe(before);
