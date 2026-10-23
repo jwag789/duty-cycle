@@ -5,6 +5,10 @@ import { Button } from './Button';
 
 interface TransportProps {
   playing: boolean;
+  /** False while a jam's clock is still syncing. */
+  ready: boolean;
+  /** In a jam, Play starts and stops it for everyone. */
+  shared: boolean;
   bpm: number;
   octave: number;
   step: number;
@@ -14,12 +18,18 @@ interface TransportProps {
   onStep: (step: number) => void;
 }
 
-export function Transport({ playing, bpm, octave, step, onTogglePlay, onBpm, onOctave, onStep }: TransportProps) {
+export function Transport({ playing, ready, shared, bpm, octave, step, onTogglePlay, onBpm, onOctave, onStep }: TransportProps) {
   return (
     <div className="transport">
-      <Button className={playing ? 'play is-playing' : 'play'} onClick={onTogglePlay} aria-pressed={playing}>
+      <Button
+        className={playing ? 'play is-playing' : 'play'}
+        onClick={onTogglePlay}
+        aria-pressed={playing}
+        disabled={!ready}
+        title={shared ? 'Starts and stops playback for everyone in the jam' : undefined}
+      >
         <span aria-hidden="true">{playing ? '■' : '▶'}</span>
-        {playing ? 'Stop' : 'Play'}
+        {!ready ? 'Syncing…' : playing ? 'Stop' : 'Play'}
         <kbd>Space</kbd>
       </Button>
       <BpmField bpm={bpm} onBpm={onBpm} />

@@ -1,9 +1,12 @@
 import {
   applyLocal,
   applyRemote,
+  ClockEstimator,
   CLOSE,
   createSync,
   parseServerMessage,
+  sampleFromPing,
+  STOPPED,
   viewSong,
   type ClientMessage,
   type Cursor,
@@ -12,6 +15,7 @@ import {
   type ServerMessage,
   type Song,
   type SyncState,
+  type Transport,
 } from '@duty-cycle/protocol';
 
 /** The slice of the WebSocket API this uses, so tests can pass the `ws` package. */
@@ -33,6 +37,19 @@ export interface RoomSnapshot {
   readonly me: Peer | null;
   /** Everyone else in the room. */
   readonly peers: readonly Peer[];
+  /** The room's shared playhead, in server time. */
+  readonly transport: Transport;
+  /** Null until the first ping comes back. */
+  readonly clock: ClockStatus | null;
+}
+
+export interface ClockStatus {
+  /** Server clock minus local clock, in ms, from the best sample. */
+  readonly offset: number;
+  /** Round trip of the best sample. */
+  readonly rtt: number;
+  readonly lastRtt: number | null;
+  readonly samples: number;
 }
 
 export interface RoomConnectionOptions {
@@ -44,10 +61,17 @@ export interface RoomConnectionOptions {
   createSocket?: (url: string) => SocketLike;
   /** Base reconnect delay; doubles per failed attempt up to 8 s. */
   retryMs?: number;
+  /** The local clock pings are timed with. */
+  now?: () => number;
+  /** Time between pings once the opening burst is done. */
+  pingIntervalMs?: number;
 }
 
 const OPEN = 1;
 const MAX_RETRY_MS = 8_000;
+/** A quick burst on (re)connect gives a usable clock estimate within a few hundred ms. */
+const PING_BURST = 6;
+const PING_BURST_GAP_MS = 60;
 
 /**
  * A live connection to one room. Local edits apply instantly and are sent to
@@ -67,12 +91,25 @@ export class RoomConnection {
   private attempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
-  private snapshot: RoomSnapshot = { status: 'connecting', song: null, me: null, peers: [] };
+  private transport: Transport = STOPPED;
+  private readonly clock = new ClockEstimator();
+  private pingTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingsSent = 0;
+  private snapshot: RoomSnapshot = {
+    status: 'connecting',
+    song: null,
+    me: null,
+    peers: [],
+    transport: STOPPED,
+    clock: null,
+  };
   private readonly listeners = new Set<() => void>();
   private readonly createSocket: (url: string) => SocketLike;
+  private readonly now: () => number;
 
   constructor(private readonly options: RoomConnectionOptions) {
     this.createSocket = options.createSocket ?? ((url) => new WebSocket(url) as SocketLike);
+    this.now = options.now ?? (() => performance.now());
   }
 
   connect(): void {
@@ -101,6 +138,20 @@ export class RoomConnection {
     this.emit();
   }
 
+  /** Starts playback for the whole room. The server picks the moment. */
+  play(fromRow = 0): void {
+    if (this.status === 'live') this.send({ type: 'transport', action: 'play', fromRow });
+  }
+
+  stop(): void {
+    if (this.status === 'live') this.send({ type: 'transport', action: 'stop' });
+  }
+
+  /** Best estimate of the server clock right now. */
+  serverNow(): number {
+    return this.now() + (this.clock.best?.offset ?? 0);
+  }
+
   setCursor(cursor: Cursor): void {
     this.cursor = cursor;
     if (this.status === 'live') this.send({ type: 'cursor', cursor });
@@ -109,6 +160,7 @@ export class RoomConnection {
   close(): void {
     this.closed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.stopPinging();
     const socket = this.socket;
     this.socket = null;
     socket?.close(1000, 'Left the room');
@@ -135,12 +187,22 @@ export class RoomConnection {
         this.sync = createSync(message.song, message.seq);
         this.me = message.you;
         this.peers = new Map(message.peers.map((peer) => [peer.id, peer]));
+        this.transport = message.transport;
         this.status = 'live';
         this.attempt = 0;
         for (const op of unconfirmed) this.sendOp(op);
         if (this.cursor) this.send({ type: 'cursor', cursor: this.cursor });
+        // The server may have restarted with a different clock; start over.
+        this.clock.reset();
+        this.startPinging();
         break;
       }
+      case 'pong':
+        this.clock.add(sampleFromPing(message.t0, message.t, this.now()));
+        break;
+      case 'transport':
+        this.transport = message.transport;
+        break;
       case 'op': {
         if (!this.sync || !this.me) return;
         const next = applyRemote(this.sync, message, this.me.id);
@@ -181,8 +243,26 @@ export class RoomConnection {
     if (this.socket?.readyState === OPEN) this.socket.send(JSON.stringify(message));
   }
 
+  private startPinging(): void {
+    this.stopPinging();
+    this.pingsSent = 0;
+    const tick = () => {
+      this.send({ type: 'ping', id: this.pingsSent, t0: this.now(), rtt: this.clock.best?.rtt ?? null });
+      this.pingsSent++;
+      const delay = this.pingsSent < PING_BURST ? PING_BURST_GAP_MS : (this.options.pingIntervalMs ?? 2_000);
+      this.pingTimer = setTimeout(tick, delay);
+    };
+    tick();
+  }
+
+  private stopPinging(): void {
+    if (this.pingTimer) clearTimeout(this.pingTimer);
+    this.pingTimer = null;
+  }
+
   private handleClose(code: number): void {
     this.socket = null;
+    this.stopPinging();
     if (this.closed) return;
     if (code === CLOSE.roomFull || code === CLOSE.badHello) {
       this.status = code === CLOSE.roomFull ? 'full' : 'failed';
@@ -203,7 +283,15 @@ export class RoomConnection {
       song: this.sync ? viewSong(this.sync) : null,
       me: this.me,
       peers: [...this.peers.values()],
+      transport: this.transport,
+      clock: this.clockStatus(),
     };
     for (const listener of this.listeners) listener();
+  }
+
+  private clockStatus(): ClockStatus | null {
+    const best = this.clock.best;
+    if (!best) return null;
+    return { offset: best.offset, rtt: best.rtt, lastRtt: this.clock.lastRtt, samples: this.clock.count };
   }
 }

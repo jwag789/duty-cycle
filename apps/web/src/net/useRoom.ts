@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { RoomConnection, type RoomSnapshot } from '@duty-cycle/client';
-import type { Song } from '@duty-cycle/protocol';
+import { STOPPED, type Song } from '@duty-cycle/protocol';
 import { playerName, socketUrl } from './session';
 
-const IDLE: RoomSnapshot = { status: 'connecting', song: null, me: null, peers: [] };
+const IDLE: RoomSnapshot = { status: 'connecting', song: null, me: null, peers: [], transport: STOPPED, clock: null };
 const noSubscribe = () => () => {};
 const idleSnapshot = () => IDLE;
 

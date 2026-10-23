@@ -1,6 +1,6 @@
 import { emptySong } from '@duty-cycle/protocol/core';
 import { PROCESSOR_NAME, type FromWorklet, type ToWorklet } from './messages';
-import { Sequencer } from './sequencer';
+import { Sequencer, type Timing } from './sequencer';
 import { ChipSynth } from './synth';
 
 // AudioWorkletGlobalScope isn't in TypeScript's DOM lib; declare the parts used here.
@@ -18,21 +18,24 @@ declare function registerProcessor(name: string, processor: new () => AudioWorkl
 class ChipProcessor extends AudioWorkletProcessor {
   private readonly synth: ChipSynth;
   private readonly sequencer: Sequencer;
-  private pendingPlay: number | null = null;
+  /** The latest timing from the main thread, applied at the start of the next block. */
+  private incoming: { timing: Timing | null } | null = null;
 
   constructor() {
     super();
     const song = emptySong();
     this.synth = new ChipSynth(sampleRate, song.channels);
-    this.sequencer = new Sequencer(this.synth, song, ({ row, frame }) => this.send({ type: 'row', row, frame }));
+    this.sequencer = new Sequencer(this.synth, song, (event) => this.send({ type: 'row', ...event }));
     this.port.onmessage = (event: MessageEvent<ToWorklet>) => this.receive(event.data);
   }
 
   process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
-    if (this.pendingPlay !== null) {
-      // Started here rather than in receive() so the first row lands on this block's first frame.
-      this.sequencer.play(this.pendingPlay, currentFrame);
-      this.pendingPlay = null;
+    if (this.incoming) {
+      // Applied here, where currentFrame is exact, rather than in receive().
+      const wasPlaying = this.sequencer.playing;
+      this.sequencer.setTiming(this.incoming.timing, currentFrame);
+      if (wasPlaying && !this.sequencer.playing) this.send({ type: 'stopped' });
+      this.incoming = null;
     }
     const [left, right] = outputs[0] ?? [];
     if (!left) return true;
@@ -49,13 +52,8 @@ class ChipProcessor extends AudioWorkletProcessor {
       case 'song':
         this.sequencer.setSong(message.song);
         break;
-      case 'play':
-        this.pendingPlay = message.fromRow;
-        break;
-      case 'stop':
-        this.pendingPlay = null;
-        this.sequencer.stop();
-        this.send({ type: 'stopped' });
+      case 'timing':
+        this.incoming = { timing: message.timing };
         break;
       case 'preview':
         this.synth.noteOn(message.channel, message.note, message.volume);

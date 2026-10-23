@@ -2,7 +2,7 @@
 
 A chiptune tracker for jamming together in the browser. Everyone in a room hears the same song, sample for sample, on the same beat.
 
-> **Status: M1.** Rooms work: share a link, edit the same song together and see each other's cursors. Each player still presses Play on their own clock; synced playback is M2. See the [roadmap](#roadmap).
+> **Status: M2.** Share a link, edit the same song together, and press Play: everyone hears the same row at the same moment, and tempo changes switch on the same row for everyone. Edits still take effect whenever they arrive; making them land on the same beat everywhere is M3. See the [roadmap](#roadmap).
 
 ## Why this is hard
 
@@ -13,14 +13,18 @@ A tracker gets around it, because you aren't streaming a performance. You're edi
 - **No audio crosses the network.** Every browser runs the same deterministic synth on the same song data, on a clock synced to the server. Lag only changes when an edit arrives, never the timing of the playback.
 - **Edits are scheduled into the future.** The server stamps each edit with a step that's safely ahead for every player, so it starts on the same beat everywhere.
 
-M0 built the half you can't fake later: a synth and sequencer that are **sample-accurate and deterministic**, and that run on the audio thread. M1 adds the shared song: one server-ordered stream of edits that every client converges on.
+The pieces so far:
+
+- **M0:** a synth and sequencer that are **sample-accurate and deterministic**, and run on the audio thread.
+- **M1:** the shared song: one server-ordered stream of edits that every client converges on.
+- **M2:** a shared clock and transport, so every player's audio hits the same row at the same moment.
 
 ## Run it
 
 ```bash
 npm install
 npm run dev        # room server on :8787 + web app on http://localhost:5173
-npm test           # 60 tests: protocol, sync convergence, DSP and timing, server, editor
+npm test           # 77 tests: protocol, sync convergence, clock sync, DSP and timing, server, editor
 npm run typecheck
 npm run build && npm start   # production: the server serves the built app on :8787
 ```
@@ -34,6 +38,7 @@ Click anywhere or press a key to turn sound on (browsers block audio until you i
    - **Another tab or window.** Each tab is its own player with its own name.
    - **Another device on your Wi-Fi.** Run `npm run dev -w @duty-cycle/web -- --host` alongside the server (or `HOST=0.0.0.0 npm start` for the production build) and open the network URL it prints.
 3. Edit away. Notes, volumes, BPM and channel settings sync for everyone, and you can see where each player's cursor is.
+4. Press **Play**. It starts for everyone, on the same row, at the same moment. Press <kbd>`</kbd> to see the sync numbers: round trip, clock error bound, audio latency.
 
 Rooms live in the server's memory until M4 adds Postgres. If the server restarts, the first player to reconnect restores the room from their copy.
 
@@ -79,6 +84,22 @@ What you see is `confirmed` with `pending` replayed on top. Your edits appear in
 
 **Staying connected** ([`RoomConnection.ts`](packages/client/src/RoomConnection.ts)). On a drop it reconnects with exponential backoff and jitter. On reconnect it takes the server's snapshot and resends anything never confirmed, which is safe because ops can be applied twice. Its hello also offers the last confirmed song, so a restarted server gets the room back from the first player who returns.
 
+**Shared clock** ([`clock.ts`](packages/protocol/src/clock.ts)). Each client pings the server NTP-style: 6 quick pings on connect, then one every 2 s. Each ping gives an offset estimate, `server − (sent + received) / 2`, that can be off by at most half its round trip. The client keeps the last 16 and trusts the one with the shortest round trip, because that's the one with the least room for error. Pings also report each player's best round trip to the server.
+
+**Shared transport** ([`transport.ts`](packages/protocol/src/transport.ts), [`room.ts`](apps/server/src/room.ts)). The server owns a single answer to "which row is playing at server time T": row `anchorRow` at `anchorTime`, at the given tempo.
+
+- **Play** is a request. The server sets row 0's time far enough ahead that the slowest player hears about it first: half the worst reported round trip plus 120 ms, kept between 150 ms and 1.5 s.
+- **A tempo change during playback** doesn't jump. The server picks the first row boundary past that same lead time and anchors the new tempo there, at the moment the old tempo would have reached it.
+- **Late joiners** get the running transport with their snapshot and fall in at the next row.
+
+**From server time to the speaker** ([`engine.ts`](packages/engine/src/engine.ts), [`sequencer.ts`](packages/engine/src/sequencer.ts)). `getOutputTimestamp()` pairs the audio clock with `performance.now()` *at the speaker*, so output latency is accounted for. Each row is scheduled to be **heard** at its time, not merely rendered.
+
+- The mapping is rechecked every 500 ms and corrected when it moves by more than 2 ms. That covers clock drift between the sound card and the CPU, and a better clock estimate arriving.
+- The audio-thread sequencer treats new timing three ways:
+  - a late start joins at the next row instead of rushing through the missed ones
+  - a small correction never replays or skips a row
+  - a tempo change anchored on a future row waits for that row, so everyone switches together
+
 **Server hygiene** ([`server.ts`](apps/server/src/server.ts)):
 
 - every message is validated with Zod
@@ -118,13 +139,28 @@ That last test is the foundation of M3.
 - A property test ([`sync.test.ts`](packages/protocol/src/sync.test.ts)) uses fast-check. It runs a server and three clients through 500 random interleavings of edits and message deliveries, all fighting over the same few cells, and asserts that every client ends with the server's exact song. Breaking the sync logic makes it fail with a one-step counterexample.
 - Integration tests ([`server.test.ts`](apps/server/src/server.test.ts), [`client.test.ts`](apps/server/src/client.test.ts)) run real `RoomConnection`s against the real server. They cover concurrent edits converging, edits made while offline arriving after a reconnect, a server restart restoring the room, cursors, full rooms, bad hellos and rate limiting.
 
+**Proving the timing** ([`transport.test.ts`](packages/protocol/src/transport.test.ts)):
+
+- A simulated network runs the real clock estimator for two players. Their clocks are off by −83 s and +86 min; one has 12 ms of latency each way, the other 95 ms, with random jitter on both. They schedule the same row within 10 ms of each other.
+- A property test over 300 random networks checks that the clock error never exceeds half the best round trip.
+- Another test pins down the case this can't solve. A lopsided route (100 ms up, 20 ms down) puts that player 40 ms early. NTP has the same blind spot, and so does every scheme that can't see one-way delays.
+- Sequencer tests cover a future start, a late start, a tempo switch landing exactly on its row, and corrections in both directions.
+- Server tests check the lead time, the tempo-change anchor, late joiners, and stopping when the room empties.
+
+**Measured in the browser**: two tabs in one jam, reading the moment each one actually *hears* a row:
+
+- They heard the same row **0.14 ms** apart, and within 0.4 ms of the server's schedule.
+- After a 140 → 175 BPM change mid-playback, they were still **0.15 ms** apart.
+
+Same-machine clocks make this the easy case. Across a real network, the clock error bound in the <kbd>`</kbd> panel is the number that matters.
+
 ## Roadmap
 
 | | Milestone | Done when |
 |---|---|---|
 | ✅ | **M0: Single-player tracker** | AudioWorklet chip synth, 32-row pattern, tracker keyboard entry, play/stop, BPM |
 | ✅ | **M1: Rooms** | Share a link and others join. Edits are server-ordered and shown immediately; a joining player gets a snapshot; colored cursors show where everyone is |
-| | **M2: Synced transport** | NTP-style clock sync; every player's playhead is on the same step; a debug overlay shows clock offset and round-trip time |
+| ✅ | **M2: Synced transport** | NTP-style clock sync; every player's playhead is on the same step; a debug overlay shows clock offset and round-trip time |
 | | **M3: Edits land on the same beat** | Edits scheduled into the future; two headless clients with simulated lag and jitter produce identical audio event logs |
 | | **M4: Persistence and replay** | The edit log in Postgres; `/replay` page; WAV export |
 

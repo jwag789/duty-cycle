@@ -110,6 +110,28 @@ describe('RoomConnection against the real server', () => {
     expect(b.getSnapshot().song!.bpm).toBe(173);
   });
 
+  it('syncs clocks and shares the transport', async () => {
+    const a = connect('Ada', { seed: emptySong() });
+    await waitFor(() => live(a), 'Ada to join');
+    const b = connect('Ben');
+    await waitFor(() => (a.getSnapshot().clock?.samples ?? 0) >= 3 && (b.getSnapshot().clock?.samples ?? 0) >= 3, 'clock samples');
+
+    // Same process: the server clock is timeOrigin + performance.now(), so the
+    // true offset is exactly timeOrigin.
+    const { clock } = a.getSnapshot();
+    expect(clock!.rtt).toBeLessThan(50);
+    expect(Math.abs(clock!.offset - performance.timeOrigin)).toBeLessThan(clock!.rtt / 2 + 1);
+
+    b.play(0);
+    await waitFor(() => a.getSnapshot().transport.playing && b.getSnapshot().transport.playing, 'both to start');
+    expect(a.getSnapshot().transport).toEqual(b.getSnapshot().transport);
+    // Row 0 is in the future for both: the server left a lead.
+    expect(a.getSnapshot().transport.anchorTime).toBeGreaterThan(a.serverNow());
+
+    a.stop();
+    await waitFor(() => !b.getSnapshot().transport.playing, 'both to stop');
+  });
+
   it('shows peers and their cursors', async () => {
     const a = connect('Ada', { seed: emptySong() });
     await waitFor(() => live(a), 'Ada to join');

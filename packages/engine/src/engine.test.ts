@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applyOp, demoSong, emptySong, NOTE_OFF, type Song } from '@duty-cycle/protocol';
 import { renderSong } from './render';
-import { Sequencer } from './sequencer';
+import { Sequencer, type RowEvent, type Timing } from './sequencer';
 import { ChipSynth, stepLfsr } from './synth';
 
 const SR = 48_000;
@@ -20,13 +20,13 @@ describe('sequencer timing', () => {
   it('starts each row on an exact frame', () => {
     const { rows } = renderSong(emptySong({ bpm: 120, rowsPerBeat: 4, rows: 32 }), { sampleRate: SR, frames: 6000 * 33 + 1 });
     expect(rows.slice(0, 4)).toEqual([
-      { row: 0, frame: 0 },
-      { row: 1, frame: 6000 },
-      { row: 2, frame: 12000 },
-      { row: 3, frame: 18000 },
+      { row: 0, absRow: 0, frame: 0 },
+      { row: 1, absRow: 1, frame: 6000 },
+      { row: 2, absRow: 2, frame: 12000 },
+      { row: 3, absRow: 3, frame: 18000 },
     ]);
-    // Wraps back to row 0 after the last row.
-    expect(rows[32]).toEqual({ row: 0, frame: 192000 });
+    // Wraps back to row 0 after the last row; the absolute count keeps going.
+    expect(rows[32]).toEqual({ row: 0, absRow: 32, frame: 192000 });
   });
 
   it('does not drift when a row is a fractional number of frames', () => {
@@ -37,15 +37,71 @@ describe('sequencer timing', () => {
     }
   });
 
-  it('re-anchors on the last row when the tempo changes', () => {
-    const synth = new ChipSynth(SR, emptySong().channels);
-    const frames: number[] = [];
-    const sequencer = new Sequencer(synth, emptySong({ bpm: 120 }), ({ frame }) => frames.push(frame));
-    sequencer.play(0, 0);
-    for (let f = 0; f <= 6000; f++) sequencer.tick(f); // rows at 0 and 6000
-    sequencer.setSong(emptySong({ bpm: 240 })); // 3000 frames per row from here
-    for (let f = 6001; f <= 12000; f++) sequencer.tick(f);
-    expect(frames).toEqual([0, 6000, 9000, 12000]);
+});
+
+describe('following a shared timing', () => {
+  /** Runs a sequencer over [from, to] and collects its rows, calling `at[frame]` first where given. */
+  function run(to: number, at: Record<number, (s: Sequencer) => void>): RowEvent[] {
+    const rows: RowEvent[] = [];
+    const sequencer = new Sequencer(new ChipSynth(SR, emptySong().channels), emptySong(), (e) => rows.push(e));
+    for (let frame = 0; frame <= to; frame++) {
+      at[frame]?.(sequencer);
+      sequencer.tick(frame);
+    }
+    return rows;
+  }
+  const t = (anchorFrame: number, anchorRow: number, framesPerRow = 6000): Timing => ({ anchorFrame, anchorRow, framesPerRow });
+
+  it('waits for a start scheduled in the future', () => {
+    const rows = run(12000, { 0: (s) => s.setTiming(t(5000, 0), 0) });
+    expect(rows.map((r) => r.frame)).toEqual([5000, 11000]);
+  });
+
+  it('joins a late start at the next row, without rushing through the missed ones', () => {
+    // Row 0 was due at frame -10000, so rows 0 and 1 are already gone.
+    const rows = run(9000, { 0: (s) => s.setTiming(t(-10000, 0), 0) });
+    expect(rows.map((r) => [r.absRow, r.frame])).toEqual([
+      [2, 2000],
+      [3, 8000],
+    ]);
+  });
+
+  it('switches tempo exactly on the anchored row', () => {
+    const rows = run(21000, {
+      0: (s) => s.setTiming(t(0, 0), 0),
+      // Arrives mid-row-0: from row 3 (frame 18000) on, rows are 3000 frames apart.
+      100: (s) => s.setTiming(t(18000, 3, 3000), 100),
+    });
+    expect(rows.map((r) => [r.absRow, r.frame])).toEqual([
+      [0, 0],
+      [1, 6000],
+      [2, 12000],
+      [3, 18000],
+      [4, 21000],
+    ]);
+  });
+
+  it('absorbs small corrections without replaying or skipping a row', () => {
+    const later = run(18000, { 0: (s) => s.setTiming(t(0, 0), 0), 7000: (s) => s.setTiming(t(50, 0), 7000) });
+    // Pushed 50 frames later mid-row: row 2 moves with it.
+    expect(later.map((r) => [r.absRow, r.frame])).toEqual([
+      [0, 0],
+      [1, 6000],
+      [2, 12050],
+    ]);
+
+    // Pulling the schedule earlier than a row that already played doesn't play it again.
+    const earlier = run(13000, { 0: (s) => s.setTiming(t(0, 0), 0), 6001: (s) => s.setTiming(t(-200, 0), 6001) });
+    expect(earlier.map((r) => [r.absRow, r.frame])).toEqual([
+      [0, 0],
+      [1, 6000],
+      [2, 11800],
+    ]);
+  });
+
+  it('stops on a null timing', () => {
+    const rows = run(13000, { 0: (s) => s.setTiming(t(0, 0), 0), 7000: (s) => s.setTiming(null, 7000) });
+    expect(rows.map((r) => r.absRow)).toEqual([0, 1]);
   });
 });
 

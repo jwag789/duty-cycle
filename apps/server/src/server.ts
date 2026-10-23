@@ -23,6 +23,8 @@ export interface ServerOptions {
   maxRooms?: number;
   /** Per-connection message budget: a burst of `burst`, refilled at `perSecond`. */
   rateLimit?: { burst: number; perSecond: number };
+  /** The server clock, in ms. Clients sync to it; tests can replace it. */
+  now?: () => number;
 }
 
 export interface RunningServer {
@@ -38,6 +40,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   const idleRoomMs = options.idleRoomMs ?? 10 * 60_000;
   const maxRooms = options.maxRooms ?? 1_000;
   const rateLimit = options.rateLimit ?? { burst: 120, perSecond: 60 };
+  const now = options.now ?? (() => performance.timeOrigin + performance.now());
 
   const rooms = new Map<string, Room>();
   const idleTimers = new Map<string, NodeJS.Timeout>();
@@ -48,7 +51,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     const existing = rooms.get(id);
     if (existing) return existing;
     if (rooms.size >= maxRooms) return null;
-    const room = new Room(id, seed ?? demoSong());
+    const room = new Room(id, seed ?? demoSong(), now);
     rooms.set(id, room);
     return room;
   };
@@ -131,6 +134,15 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
           break;
         case 'cursor':
           session.room.moveCursor(session.id, message.cursor);
+          break;
+        case 'ping':
+          // Stamped and answered straight away: any delay here becomes clock error.
+          send({ type: 'pong', id: message.id, t0: message.t0, t: now() });
+          session.room.noteRoundTrip(session.id, message.rtt);
+          break;
+        case 'transport':
+          if (message.action === 'play') session.room.play(session.id, message.fromRow);
+          else session.room.stop(session.id);
           break;
         case 'hello':
           send({ type: 'error', message: 'Already joined' });

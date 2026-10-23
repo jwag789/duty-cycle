@@ -608,3 +608,62 @@ input:focus-visible {
   min-height: 300px;
   color: var(--text-dim);
 }
+
+/* Sync stats */
+
+.sync-panel {
+  position: fixed;
+  right: 20px;
+  bottom: 56px;
+  z-index: 10;
+  width: min(320px, calc(100vw - 32px));
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+}
+
+.sync-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font: 400 12px var(--pixel);
+  color: var(--accent);
+}
+
+.sync-close {
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sync-panel dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px 12px;
+}
+
+.sync-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sync-stat dt {
+  color: var(--text-dim);
+}
+
+.sync-stat dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}

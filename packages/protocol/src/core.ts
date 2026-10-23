@@ -5,3 +5,5 @@ export * from './factory';
 export * from './notes';
 export * from './timing';
 export type { Cell, ChannelSettings, Song } from './song';
+export * from './transport';
+export * from './clock';

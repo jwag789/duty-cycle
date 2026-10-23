@@ -5,11 +5,13 @@ import { Button } from './components/Button';
 import { PatternGrid } from './components/PatternGrid';
 import { Scope } from './components/Scope';
 import { SessionBar } from './components/SessionBar';
+import { SyncPanel } from './components/SyncPanel';
 import { Transport } from './components/Transport';
 import { handleKey, INITIAL_EDITOR, type Cursor, type EditorState } from './editor';
 import { newRoomId, roomFromPath, roomUrl } from './net/session';
 import { useRoom } from './net/useRoom';
 import { useChipEngine, usePlayhead } from './useChipEngine';
+import { usePlayback } from './usePlayback';
 import { useSoloSong } from './useSoloSong';
 
 export function App() {
@@ -27,9 +29,16 @@ export function App() {
 
   const [editor, setEditor] = useState<EditorState>(INITIAL_EDITOR);
   const [mutes, setMutes] = useState<boolean[]>(() => CHANNELS.map(() => false));
-  const [playing, setPlaying] = useState(false);
+  const [showSync, setShowSync] = useState(false);
   const { engine, audioState, error } = useChipEngine();
+  const playback = usePlayback(room, connection, snapshot, song);
+  const playing = playback.transport.playing;
   const playRow = usePlayhead(engine, playing);
+
+  // Dev-only handle for poking at timing from the console.
+  useEffect(() => {
+    if (import.meta.env.DEV) Object.assign(window, { __dutyCycle: { engine, transport: playback.transport } });
+  }, [engine, playback.transport]);
 
   useEffect(() => {
     const onPopState = () => setRoom(roomFromPath(location.pathname));
@@ -46,6 +55,10 @@ export function App() {
   }, [engine, mutes]);
 
   useEffect(() => {
+    engine?.follow(playback.transport, playback.offset);
+  }, [engine, playback.transport, playback.offset]);
+
+  useEffect(() => {
     connection?.setCursor(editor.cursor);
   }, [connection, editor.cursor]);
 
@@ -56,13 +69,13 @@ export function App() {
     }
   }, [song, editor.cursor.row]);
 
+  const { play, stop, ready } = playback;
   const togglePlay = useCallback(() => {
-    if (!engine) return;
+    if (!engine || !ready) return;
     void engine.resume();
-    if (playing) engine.stop();
-    else engine.play(0);
-    setPlaying(!playing);
-  }, [engine, playing]);
+    if (playing) stop();
+    else play();
+  }, [engine, ready, playing, play, stop]);
 
   // The key handler reads the latest state through a ref so it is bound once.
   const latest = useRef({ editor, song, engine, togglePlay, dispatch });
@@ -72,6 +85,11 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || isTextField(event.target)) return;
+      if (event.code === 'Backquote') {
+        event.preventDefault();
+        setShowSync((shown) => !shown);
+        return;
+      }
       const { editor, song, engine, togglePlay, dispatch } = latest.current;
       if (!song) return;
       const result = handleKey(editor, song, {
@@ -134,6 +152,8 @@ export function App() {
         </h1>
         <Transport
           playing={playing}
+          ready={playback.ready}
+          shared={room !== null}
           bpm={song?.bpm ?? 120}
           octave={editor.octave}
           step={editor.step}
@@ -218,7 +238,21 @@ export function App() {
         <span>
           <kbd>Space</kbd> play / stop
         </span>
+        <span>
+          <kbd>`</kbd> sync stats
+        </span>
       </footer>
+
+      {showSync && (
+        <SyncPanel
+          engine={engine}
+          inRoom={room !== null}
+          clock={room ? snapshot.clock : null}
+          transport={playback.transport}
+          offset={playback.offset}
+          onClose={() => setShowSync(false)}
+        />
+      )}
     </div>
   );
 }

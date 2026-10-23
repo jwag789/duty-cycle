@@ -25,6 +25,14 @@ export const CursorSchema = z.object({
   column: z.enum(['note', 'volume']),
 });
 
+export const TransportSchema = z.object({
+  playing: z.boolean(),
+  anchorTime: z.number().finite(),
+  anchorRow: z.number().int().nonnegative(),
+  bpm: z.number().int().positive(),
+  rowsPerBeat: z.number().int().positive(),
+});
+
 export const PeerSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -43,6 +51,19 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   /** clientSeq lets the sender recognise its own op when the server echoes it back. */
   z.object({ type: z.literal('op'), clientSeq: z.number().int().nonnegative(), op: OpSchema }),
   z.object({ type: z.literal('cursor'), cursor: CursorSchema }),
+  /** Clock sync. `rtt` reports the sender's best round trip so far, which sets the room's lead time. */
+  z.object({
+    type: z.literal('ping'),
+    id: z.number().int().nonnegative(),
+    t0: z.number().finite(),
+    rtt: z.number().finite().nonnegative().nullable(),
+  }),
+  /** Asks the server to start or stop playback for the whole room. */
+  z.object({
+    type: z.literal('transport'),
+    action: z.enum(['play', 'stop']),
+    fromRow: z.number().int().min(0).max(MAX_ROWS - 1).optional(),
+  }),
 ]);
 
 export const ServerMessageSchema = z.discriminatedUnion('type', [
@@ -53,6 +74,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
     seq: z.number().int().nonnegative(),
     song: SongSchema,
     peers: z.array(PeerSchema),
+    transport: TransportSchema,
   }),
   /** One op in the room's single order. Sent to everyone, including its author. */
   z.object({
@@ -66,6 +88,10 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('left'), id: z.string() }),
   z.object({ type: z.literal('cursor'), id: z.string(), cursor: CursorSchema }),
   z.object({ type: z.literal('error'), message: z.string() }),
+  /** Answer to a ping: `t` is the server clock when it was handled. */
+  z.object({ type: z.literal('pong'), id: z.number().int().nonnegative(), t0: z.number().finite(), t: z.number().finite() }),
+  /** The room's transport changed. `by` is who caused it, or null for the server. */
+  z.object({ type: z.literal('transport'), transport: TransportSchema, by: z.string().nullable() }),
 ]);
 
 export type Cursor = z.infer<typeof CursorSchema>;

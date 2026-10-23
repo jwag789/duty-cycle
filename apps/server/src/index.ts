@@ -2,7 +2,10 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './server';
 
-const port = Number(process.env.PORT ?? 8787);
+// --port wins over $PORT: in dev, tools that launch the web app set PORT for
+// it, and the room server must not grab that one too. Hosts set PORT in production.
+const portFlag = process.argv.indexOf('--port');
+const port = Number(portFlag >= 0 ? process.argv[portFlag + 1] : (process.env.PORT ?? 8787));
 // Loopback by default; set HOST=0.0.0.0 to serve other machines (or when deployed).
 const host = process.env.HOST ?? '127.0.0.1';
 const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url));
