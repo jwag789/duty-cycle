@@ -2,6 +2,9 @@
 # App names are global on Fly: if 'duty-cycle' is taken, `fly launch` picks another.
 app = 'duty-cycle'
 primary_region = 'dfw'
+# PGlite runs Postgres inside the Node process: it peaks around 830 MB while
+# creating the database on first boot and settles near 400 MB. Swap covers spikes.
+swap_size_mb = 512
 
 [build]
   dockerfile = 'Dockerfile'
@@ -41,4 +44,4 @@ primary_region = 'dfw'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '512mb'
+  memory = '1gb'
