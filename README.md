@@ -48,6 +48,38 @@ DATABASE_URL=postgres://user:pass@host/db npm start
 
 Click anywhere or press a key to turn sound on (browsers block audio until you interact with the page), then press **Space**.
 
+## Deploy
+
+The whole app is one Node process: it serves the built web app, the WebSocket on `/ws`, and a `/health` check. The [`Dockerfile`](Dockerfile) builds it into one image:
+
+```bash
+docker build -t duty-cycle .
+docker run -p 8787:8787 -v duty-cycle-data:/app/.data duty-cycle   # http://localhost:8787
+```
+
+**Run exactly one instance.** Rooms live in the server's memory, so two instances would split a jam in two.
+
+**Fly.io** ([`fly.toml`](fly.toml)) fits this: WebSockets work out of the box, and one machine with a volume is the whole deployment.
+
+- **Storage:** rooms are saved with PGlite on a 1 GB volume at `/app/.data`.
+- **Health check:** Fly polls `/health`.
+- **Idle:** the machine stops when idle and starts on the next visit; rooms come back from the volume.
+
+```bash
+brew install flyctl
+fly auth login
+fly launch --copy-config --no-deploy   # uses fly.toml; choose an app name and region
+fly deploy --ha=false                  # one machine; creates the volume on first deploy
+fly open
+```
+
+To use a managed Postgres instead of the volume, create one in the same region and attach it. `attach` sets `DATABASE_URL` as a secret and restarts the app:
+
+```bash
+fly mpg create
+fly mpg attach <cluster-id> -a <app-name>
+```
+
 ## Jamming with someone
 
 1. Click **Start a jam →**. You get a room at `/r/<code>`, starting from whatever song you had open.
