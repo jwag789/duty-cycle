@@ -3,3 +3,5 @@
 export { ChipSynth, noiseClockHz, stepLfsr } from './synth';
 export { Sequencer, type QueuedOp, type RowEvent, type Timing } from './sequencer';
 export { renderSong, type RenderOptions } from './render';
+export { HistoryRenderer, renderHistory, type HistoryRenderOptions } from './history';
+export { encodeWav } from './wav';

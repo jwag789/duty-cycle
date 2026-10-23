@@ -18,8 +18,8 @@ declare function registerProcessor(name: string, processor: new () => AudioWorkl
 class ChipProcessor extends AudioWorkletProcessor {
   private readonly synth: ChipSynth;
   private readonly sequencer: Sequencer;
-  /** The latest timing from the main thread, applied at the start of the next block. */
-  private incoming: { timing: Timing | null } | null = null;
+  /** Timing changes from the main thread, applied in order at the start of the next block. */
+  private incoming: (Timing | null)[] = [];
 
   constructor() {
     super();
@@ -30,13 +30,13 @@ class ChipProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
-    if (this.incoming) {
-      // Applied here, where currentFrame is exact, rather than in receive().
+    // Applied here, where currentFrame is exact, rather than in receive().
+    for (const timing of this.incoming) {
       const wasPlaying = this.sequencer.playing;
-      this.sequencer.setTiming(this.incoming.timing, currentFrame);
+      this.sequencer.setTiming(timing, currentFrame);
       if (wasPlaying && !this.sequencer.playing) this.send({ type: 'stopped' });
-      this.incoming = null;
     }
+    this.incoming = [];
     const [left, right] = outputs[0] ?? [];
     if (!left) return true;
     for (let i = 0; i < left.length; i++) {
@@ -53,7 +53,7 @@ class ChipProcessor extends AudioWorkletProcessor {
         this.sequencer.setSong(message.song, message.queue);
         break;
       case 'timing':
-        this.incoming = { timing: message.timing };
+        this.incoming.push(message.timing);
         break;
       case 'preview':
         this.synth.noteOn(message.channel, message.note, message.volume);

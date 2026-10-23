@@ -103,6 +103,15 @@ export class ChipEngine {
     }
   }
 
+  /**
+   * Stops and starts `transport` afresh, for a jump to a new position (a seek)
+   * rather than a small correction, so playback doesn't wait to catch up.
+   */
+  restart(transport: Transport, offset: number): void {
+    this.follow({ ...transport, playing: false }, offset);
+    this.follow(transport, offset);
+  }
+
   preview(channel: number, note: number, volume: number): void {
     this.send({ type: 'preview', channel, note, volume });
   }

@@ -13,6 +13,7 @@ import {
   stopTransport,
   timeOfRow,
   type Cursor,
+  type HistoryEvent,
   type Landing,
   type Op,
   type Peer,
@@ -29,6 +30,17 @@ const COLORS = ['#ff8a3d', '#c792ff', '#4fe0b6', '#ffe14d', '#ff5c6c', '#6aa8ff'
 export interface RoomClient {
   readonly id: string;
   send(message: ServerMessage): void;
+}
+
+export interface RoomOptions {
+  /** The server clock, in ms. */
+  now: () => number;
+  /** Ops already applied to the song, when restoring a saved room. */
+  seq?: number;
+  /** The transport to start from (stopped). Restored rooms keep counting epochs. */
+  transport?: Transport;
+  /** Called with every op and transport change, in order, for the event log. */
+  onEvent?: (event: HistoryEvent) => void;
 }
 
 interface Member {
@@ -56,13 +68,23 @@ export class Room {
   private lastLanding = 0;
   private readonly members = new Map<string, Member>();
 
+  private readonly now: () => number;
+  private readonly onEvent: (event: HistoryEvent) => void;
+
   constructor(
     readonly id: string,
     song: Song,
-    private readonly now: () => number,
+    options: RoomOptions,
   ) {
-    this.state = createSync(song, 0);
-    this.transport = { ...STOPPED, bpm: song.bpm, rowsPerBeat: song.rowsPerBeat };
+    this.now = options.now;
+    this.onEvent = options.onEvent ?? (() => {});
+    this.state = createSync(song, options.seq ?? 0);
+    this.transport = { ...(options.transport ?? STOPPED), playing: false, bpm: song.bpm, rowsPerBeat: song.rowsPerBeat };
+  }
+
+  /** The server's whole song and how many ops built it, for snapshots. */
+  snapshot(): { song: Song; seq: number } {
+    return { song: confirmedSong(this.state), seq: this.state.seq };
   }
 
   get size(): number {
@@ -97,7 +119,10 @@ export class Room {
     if (!this.members.delete(id)) return;
     this.broadcast({ type: 'left', id });
     // Nobody left to hear it: don't let the loop run on in an empty room.
-    if (this.members.size === 0) this.stopAndSettle();
+    if (this.members.size === 0 && this.transport.playing) {
+      this.stopAndSettle();
+      this.record({ kind: 'transport', time: this.now(), transport: this.transport, by: null });
+    }
   }
 
   applyClientOp(id: string, clientSeq: number, op: Op): void {
@@ -113,6 +138,7 @@ export class Room {
     const message: ServerOpMessage = { type: 'op', seq: this.state.seq + 1, op, from: id, clientSeq, at };
     this.state = applyRemote(this.state, message, '')!;
     this.broadcast(message);
+    this.record({ kind: 'op', time: this.now(), seq: message.seq, op, at, by: this.nameOf(id) });
 
     // A tempo change lands on the same row as the edit that made it, so the
     // BPM everyone sees and the tempo everyone hears switch together.
@@ -120,7 +146,10 @@ export class Room {
     const next = retempo(this.transport, confirmedSong(this.state), switchAt);
     if (next !== this.transport) {
       this.transport = next;
-      if (next.playing) this.broadcast({ type: 'transport', transport: next, by: id });
+      if (next.playing) {
+        this.broadcast({ type: 'transport', transport: next, by: id });
+        this.record({ kind: 'transport', time: this.now(), transport: next, by: this.nameOf(id) });
+      }
     }
   }
 
@@ -131,12 +160,14 @@ export class Room {
     this.lastLanding = 0;
     this.transport = startTransport(this.transport, this.state.audible, fromRow, this.now() + this.lead());
     this.broadcast({ type: 'transport', transport: this.transport, by: id });
+    this.record({ kind: 'transport', time: this.now(), transport: this.transport, by: this.nameOf(id) });
   }
 
   stop(id: string): void {
     if (!this.members.has(id) || !this.transport.playing) return;
     this.stopAndSettle();
     this.broadcast({ type: 'transport', transport: this.transport, by: id });
+    this.record({ kind: 'transport', time: this.now(), transport: this.transport, by: this.nameOf(id) });
   }
 
   noteRoundTrip(id: string, rtt: number | null): void {
@@ -149,6 +180,14 @@ export class Room {
     if (!member) return;
     member.peer = { ...member.peer, cursor };
     this.broadcast({ type: 'cursor', id, cursor }, id);
+  }
+
+  private record(event: HistoryEvent): void {
+    this.onEvent(event);
+  }
+
+  private nameOf(id: string): string {
+    return this.members.get(id)?.peer.name ?? 'someone';
   }
 
   private stopAndSettle(): void {

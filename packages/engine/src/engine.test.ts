@@ -219,3 +219,19 @@ describe('queued edits', () => {
     expect(queuedWhileStopped).toEqual(alreadyApplied);
   });
 });
+
+describe('WAV export', () => {
+  it('writes a valid 16-bit mono PCM file', async () => {
+    const { encodeWav } = await import('./wav');
+    const wav = new DataView(encodeWav(Float32Array.from([0, 1, -1, 0.5, 2]), 44_100));
+    const text = (at: number, length: number) => String.fromCharCode(...Array.from({ length }, (_, i) => wav.getUint8(at + i)));
+    expect(text(0, 4)).toBe('RIFF');
+    expect(text(8, 4)).toBe('WAVE');
+    expect(wav.getUint16(20, true)).toBe(1); // PCM
+    expect(wav.getUint16(22, true)).toBe(1); // mono
+    expect(wav.getUint32(24, true)).toBe(44_100);
+    expect(wav.getUint32(40, true)).toBe(10); // 5 samples × 2 bytes
+    expect(wav.byteLength).toBe(54);
+    expect([0, 1, 2, 3, 4].map((i) => wav.getInt16(44 + i * 2, true))).toEqual([0, 32767, -32768, 16384, 32767]);
+  });
+});

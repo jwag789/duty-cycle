@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ChipSynth, Sequencer } from '@duty-cycle/engine/dsp';
+import { ChipSynth, renderHistory, Sequencer } from '@duty-cycle/engine/dsp';
 import {
   applyLocal,
   applyRemote,
@@ -7,6 +7,7 @@ import {
   demoSong,
   framesPerRow,
   settle,
+  type HistoryEvent,
   STOPPED,
   type Op,
   type ServerMessage,
@@ -63,7 +64,8 @@ interface Player {
 function simulate(networks: Network[], seed: number) {
   const random = rng(seed);
   let now = 0;
-  const room = new Room('beattest', demoSong(), () => now);
+  const events: HistoryEvent[] = [];
+  const room = new Room('beattest', demoSong(), { now: () => now, onEvent: (event) => events.push(event) });
   const toServer: { at: number; run: () => void }[] = [];
   const lastUp = new Map<string, number>();
 
@@ -176,7 +178,7 @@ function simulate(networks: Network[], seed: number) {
     }
   }
 
-  return players;
+  return Object.assign(players, { events });
 }
 
 describe('edits land on the same beat for everyone', () => {
@@ -211,6 +213,23 @@ describe('edits land on the same beat for everyone', () => {
       }
     }
   }, 30_000); // Renders 9 s of 48 kHz audio for 15 players.
+
+  it('replaying the saved history renders exactly what the players heard', () => {
+    const players = simulate(
+      [
+        { up: 8, down: 8, jitter: 10 },
+        { up: 140, down: 160, jitter: 60 },
+      ],
+      7,
+    );
+    const replay = renderHistory(
+      { room: 'beattest', seed: demoSong(), events: players.events },
+      { sampleRate: FRAMES_PER_MS * 1000, from: 0, to: DURATION_MS },
+    );
+    expect(players.events.filter((e) => e.kind === 'op').length).toBeGreaterThan(40);
+    expect(replay).toEqual(players[0]!.samples);
+    expect(replay).toEqual(players[1]!.samples);
+  });
 
   it('fails when a player claims a faster network than it has (the test can tell)', () => {
     // Reports a 20 ms round trip but really takes 600 ms down: the lead is too short for it.

@@ -1,12 +1,18 @@
 import { MAX_NAME_LENGTH, ROOM_ID_PATTERN } from '@duty-cycle/protocol';
 
 const ROOM_PATH = /^\/r\/([^/]+)\/?$/;
+const REPLAY_PATH = /^\/r\/([^/]+)\/replay\/?$/;
 // No 0/o or 1/l, so a room code read aloud survives.
 const ROOM_ALPHABET = 'abcdefghijkmnpqrstuvwxyz23456789';
 const NAME_KEY = 'duty-cycle:name';
 
 export function roomFromPath(pathname: string): string | null {
   const id = ROOM_PATH.exec(pathname)?.[1];
+  return id && ROOM_ID_PATTERN.test(id) ? id : null;
+}
+
+export function replayFromPath(pathname: string): string | null {
+  const id = REPLAY_PATH.exec(pathname)?.[1];
   return id && ROOM_ID_PATTERN.test(id) ? id : null;
 }
 

@@ -4,3 +4,4 @@ export * from './ops';
 export * from './demo';
 export * from './wire';
 export * from './sync';
+export * from './history';

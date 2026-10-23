@@ -50,6 +50,9 @@ export function SessionBar({ room, snapshot, shareUrl, onStartJam, onLeave }: Se
       </ul>
       <div className="session-actions">
         {shareUrl && <CopyLink url={shareUrl} />}
+        <a className="btn" href={`/r/${room}/replay`} title="Play this jam back from the start">
+          Replay
+        </a>
         <Button onClick={onLeave}>Leave</Button>
       </div>
     </div>

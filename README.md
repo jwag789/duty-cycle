@@ -2,7 +2,12 @@
 
 A chiptune tracker for jamming together in the browser. Everyone in a room hears the same song, sample for sample, on the same beat.
 
-> **Status: M3.** Share a link, edit the same song together, and press Play. Everyone hears the same row at the same moment, and every edit and tempo change lands on the same row for everyone. In simulation, players on very different networks produce bit-identical audio. Persistence and replay are next (M4). See the [roadmap](#roadmap).
+> **Status: v1 complete (M0–M4).**
+> - Share a link, edit the same song together, and press Play. Everyone hears the same row at the same moment, and every edit and tempo change lands on the same row for everyone.
+> - Every jam is saved to Postgres and can be replayed or exported as a WAV.
+> - In simulation, players on very different networks render bit-identical audio, and the replay renders the same bits again.
+>
+> See the [roadmap](#roadmap).
 
 ## Why this is hard
 
@@ -19,15 +24,26 @@ The pieces so far:
 - **M1:** the shared song: one server-ordered stream of edits that every client converges on.
 - **M2:** a shared clock and transport, so every player's audio hits the same row at the same moment.
 - **M3:** edits scheduled onto a future row, so a change made by anyone starts on the same row for everyone.
+- **M4:** every jam saved as an event log in Postgres, so rooms survive restarts, and a replay page that plays any jam back exactly or exports it as a WAV.
 
 ## Run it
 
 ```bash
 npm install
 npm run dev        # room server on :8787 + web app on http://localhost:5173
-npm test           # 93 tests: protocol, sync convergence, clock sync, same-beat edits, DSP and timing, server, editor
+npm test           # 108 tests: protocol, sync, clock, same-beat edits, persistence, replay, DSP, server, editor
 npm run typecheck
 npm run build && npm start   # production: the server serves the built app on :8787
+```
+
+Rooms are saved automatically:
+
+- **`DATABASE_URL` set:** a real Postgres.
+- **Otherwise:** [PGlite](https://pglite.dev), which is Postgres compiled to WebAssembly and running inside the server process. Data goes under `.data/`, so local dev and the tests need no database to install.
+- **`npm start -- --memory`:** keeps nothing.
+
+```bash
+DATABASE_URL=postgres://user:pass@host/db npm start
 ```
 
 Click anywhere or press a key to turn sound on (browsers block audio until you interact with the page), then press **Space**.
@@ -41,8 +57,9 @@ Click anywhere or press a key to turn sound on (browsers block audio until you i
 3. Edit away. Notes, volumes, BPM and channel settings sync for everyone, and you can see where each player's cursor is.
 4. Press **Play**. It starts for everyone, on the same row, at the same moment. Press <kbd>`</kbd> to see the sync numbers: round trip, clock error bound, audio latency.
 5. Edit while it plays. Your change shows up right away, dimmed with a dotted underline, then becomes audible a row or two later, on the same row for everyone.
+6. Click **Replay**, or open `/r/<code>/replay`, to play the jam back from the start. You can seek anywhere, follow along as a feed narrates who did what, or **Download WAV**.
 
-Rooms live in the server's memory until M4 adds Postgres. If the server restarts, the first player to reconnect restores the room from their copy.
+Rooms are saved as they happen and survive server restarts. If the server runs with `--memory`, the first player to reconnect after a restart restores the room from their own copy.
 
 ## Keys
 
@@ -71,7 +88,8 @@ packages/
   engine/     ChipSynth + Sequencer (pure TS), the AudioWorklet, the main-thread ChipEngine
   client/     RoomConnection: one room over a WebSocket, with optimistic edits and reconnects
 apps/
-  server/     Node + ws: rooms, edit ordering, presence, rate limits; serves the built web app
+  server/     Node + ws: rooms, edit ordering, presence, rate limits, the Postgres event log, the history API;
+              serves the built web app
   web/        Vite + React tracker UI
 ```
 
@@ -111,6 +129,22 @@ What you see is `confirmed` with `pending` replayed on top. Your edits appear in
 - **Stops and restarts:** each Play starts a new *epoch*. Stopping or restarting lands everything still waiting, since those rows will never play.
 - **Late joiners and reconnects** get both what's audible and what's still due.
 - **The server** keeps the same sync state as a client, minus pending edits.
+
+**Persistence** ([`store.ts`](apps/server/src/store.ts)). The event log is the source of truth:
+
+- **Two tables:** `rooms` holds the seed song and a snapshot; `room_events` is append-only and holds every op (with its sequence number and landing row) and every transport change, stamped with server time.
+- **Loading a room** means its latest snapshot plus the ops after it. A snapshot is taken every 100 ops, so loading never replays a room's whole life.
+- **Writes queue per room**, so they land in order without the music ever waiting on the database.
+- **Concurrent first joins share one load.**
+- **A restarted room keeps counting:** sequence numbers and epochs carry on, and the log records that the music stopped when the server did.
+- **One SQL interface** with two drivers: `pg` for production and PGlite for dev and tests.
+
+**Replay** ([`history.ts`](packages/protocol/src/history.ts), [`ReplayPage.tsx`](apps/web/src/replay/ReplayPage.tsx), [`history.ts` in engine](packages/engine/src/history.ts)):
+
+- `GET /api/rooms/:code/history` returns the seed and the full log.
+- The replay page runs the log through the same sync code the players ran, applying each event at the server time it happened, and drives the same engine.
+- Seeking is a pure function of time, so you can jump anywhere.
+- **WAV export** renders the whole jam offline with the same sequencer and synth, in one-second slices so the page stays responsive.
 
 **Server hygiene** ([`server.ts`](apps/server/src/server.ts)):
 
@@ -179,6 +213,11 @@ Engine tests ([`engine.test.ts`](packages/engine/src/engine.test.ts)) prove the 
 
 **In the browser:** two tabs received the same edit queued for the same row, about 250 ms before that row played.
 
+**Proving the replay** ([`beat.test.ts`](apps/server/src/beat.test.ts), [`persist.test.ts`](apps/server/src/persist.test.ts)):
+
+- The same simulated two-player jam is recorded through the room's event log, then rendered from history alone. **The replay is bit-identical to what both players heard.**
+- Persistence tests run against real Postgres semantics (in-memory PGlite). They cover rebuilding a room from seed and log, loading from a snapshot, duplicate sequence numbers being refused, and a server restarting mid-song: the room comes back with its song, order and epochs, and the log shows the music stopping.
+
 ## Roadmap
 
 | | Milestone | Done when |
@@ -187,6 +226,6 @@ Engine tests ([`engine.test.ts`](packages/engine/src/engine.test.ts)) prove the 
 | ✅ | **M1: Rooms** | Share a link and others join. Edits are server-ordered and shown immediately; a joining player gets a snapshot; colored cursors show where everyone is |
 | ✅ | **M2: Synced transport** | NTP-style clock sync; every player's playhead is on the same step; a debug overlay shows clock offset and round-trip time |
 | ✅ | **M3: Edits land on the same beat** | Edits scheduled onto a future row; players on simulated networks with very different lag and jitter render bit-identical audio |
-| | **M4: Persistence and replay** | The edit log in Postgres; `/replay` page; WAV export |
+| ✅ | **M4: Persistence and replay** | Every jam saved as an event log in Postgres; a replay page with seeking and a narrated feed; WAV export that renders exactly what players heard |
 
 Planned for after v1: live keyboard playing (each note quantized to the next beat everyone can reach), multi-pattern songs, an effects column, multiplayer undo, mobile.

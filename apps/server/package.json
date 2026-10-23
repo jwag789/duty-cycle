@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "@duty-cycle/protocol": "*",
+    "@electric-sql/pglite": "^0.5.11",
+    "pg": "^8.23.1",
     "tsx": "^4.19.2",
     "ws": "^8.18.0"
   },
@@ -16,6 +18,7 @@
     "@duty-cycle/client": "*",
     "@duty-cycle/engine": "*",
     "@types/node": "^22.10.5",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.13"
   }
 }
