@@ -2,6 +2,8 @@
 
 A chiptune tracker for jamming together in the browser. Everyone in a room hears the same song, sample for sample, on the same beat.
 
+**Live demo: [duty-cycle.fly.dev](https://duty-cycle.fly.dev/)**. Start a jam and open the invite link in a second tab or on another device. The server sleeps when idle, so the first visit can take about 10 seconds.
+
 > **Status: v1 complete (M0–M4).**
 > - Share a link, edit the same song together, and press Play. Everyone hears the same row at the same moment, and every edit and tempo change lands on the same row for everyone.
 > - Every jam is saved to Postgres and can be replayed or exported as a WAV.
@@ -61,7 +63,7 @@ docker run -p 8787:8787 -v duty-cycle-data:/app/.data duty-cycle   # http://loca
 
 **Fly.io** ([`fly.toml`](fly.toml)) fits this: WebSockets work out of the box, and one machine with a volume is the whole deployment.
 
-- **Storage:** rooms are saved with PGlite on a 1 GB volume at `/app/.data`.
+- **Storage:** rooms are saved with PGlite on a 1 GB volume at `/app/.data`. PGlite runs inside the server process and needs about 830 MB while it creates the database on first boot, so the machine has 1 GB of RAM plus swap.
 - **Health check:** Fly polls `/health`.
 - **Idle:** the machine stops when idle and starts on the next visit; rooms come back from the volume.
 
