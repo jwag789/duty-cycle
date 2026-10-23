@@ -1,7 +1,7 @@
 # Fly.io config for the live demo. See "Deploy" in README.md.
 # App names are global on Fly: if 'duty-cycle' is taken, `fly launch` picks another.
 app = 'duty-cycle'
-primary_region = 'iad'
+primary_region = 'dfw'
 
 [build]
   dockerfile = 'Dockerfile'
