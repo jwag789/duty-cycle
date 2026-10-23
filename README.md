@@ -4,6 +4,8 @@ A chiptune tracker for jamming together in the browser. Everyone in a room hears
 
 **Live demo: [duty-cycle.fly.dev](https://duty-cycle.fly.dev/)**. Start a jam and open the invite link in a second tab or on another device. The server sleeps when idle, so the first visit can take about 10 seconds.
 
+![Two players in a Duty Cycle jam: the song plays while the other player's cursor sits on the triangle channel](docs/screenshot.png)
+
 > **Status: v1 complete (M0–M4).**
 > - Share a link, edit the same song together, and press Play. Everyone hears the same row at the same moment, and every edit and tempo change lands on the same row for everyone.
 > - Every jam is saved to Postgres and can be replayed or exported as a WAV.
